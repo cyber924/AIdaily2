@@ -101,8 +101,9 @@ async function handle(request:Request,env:Env){
  if(path==="/api/generate"&&request.method==="POST"){const b:any=await request.json();const created=await createBriefing(env,safeText(b.category,40)||undefined,safeText(b.topic,300)||undefined);return json({ok:true,articles:created});}
  if(path==="/api/agent"&&request.method==="POST"){
   const b:any=await request.json();const command=safeText(b.command,1000);if(!command)return json({error:"명령을 입력하세요."},400);
-  if(/뉴스|브리핑|발행|작성|만들어|생성/.test(command)){const cat=categories.find(c=>command.includes(c));const result=await createBriefing(env,cat);return json({ok:true,message:result.length+"건의 브리핑을 생성하고 발행했습니다.",articles:result});}
   if(/예약/.test(command)){const m=command.match(/(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2})/);if(!m)return json({error:"예약 시간은 YYYY-MM-DD HH:mm 형식으로 말해주세요."},400);const dt=new Date(m[1].replace(" ","T")+":00+09:00");if(isNaN(dt.getTime()))return json({error:"예약 시간이 올바르지 않습니다."},400);const qid=id(),stamp=now();await env.DB.prepare("INSERT INTO publish_queue(id,topic,category,scheduled_at,status,created_at,updated_at) VALUES(?,?,?,?, 'queued',?,?)").bind(qid,command,categories.find(c=>command.includes(c))||"시사",dt.toISOString(),stamp,stamp).run();return json({ok:true,message:"예약 대기열에 등록했습니다.",id:qid});}
+  if(/뉴스|브리핑|발행|작성|만들어|생성/.test(command)){const cat=categories.find(c=>command.includes(c));const result=await createBriefing(env,cat);return json({ok:true,message:result.length+"건의 브리핑을 생성하고 발행했습니다.",articles:result});}
+
   return json({ok:true,message:"명령을 이해했습니다. '오늘 IT 뉴스 브리핑 발행해줘' 또는 '2026-11-28 09:00 시사 뉴스 예약해줘'처럼 요청해 주세요."});
  }
  if(path==="/api/queue"&&request.method==="GET"){await publishDue(env);const r=await env.DB.prepare("SELECT * FROM publish_queue ORDER BY created_at DESC LIMIT 50").all();return json(r.results);}
