@@ -47,7 +47,7 @@ async function unsplash(env:Env,category:string,title:string){
   const r=await fetch(url,{headers:{Authorization:"Client-ID "+env.UNSPLASH_ACCESS_KEY},signal:AbortSignal.timeout(12000)});
   if(r.ok){const d:any=await r.json();const p=d.results?.[0];if(p)return {url:p.urls?.regular||p.urls?.small,alt:p.alt_description||title,credit:"Photo by "+(p.user?.name||"Unsplash")+" on Unsplash"};}
  }
- const fallback:Record<string,string>={시사:"photo-1529107386315-e1a2ed48a620",경제:"photo-146 이미",IT:"photo-1518770660439-4636190af475",산업:"photo-1581091226825-a6a2a5aee158",금융:"photo-1611974789855-9c2a0a7236a3",정치:"photo-1529107386315-e1a2ed48a620",사회:"photo-1511632765486-a01980e01a18",라이프:"photo-149生活",과학:"photo-1532094349884-543bc11b234d",문화:"photo-1513364776144-60967b0f800f"};
+ const fallback:Record<string,string>={시사:"photo-1529107386315-e1a2ed48a620",경제:"photo-1460925895917-afdab827c52f",IT:"photo-1518770660439-4636190af475",산업:"photo-1581091226825-a6a2a5aee158",금융:"photo-1611974789855-9c2a0a7236a3",정치:"photo-1529107386315-e1a2ed48a620",사회:"photo-1511632765486-a01980e01a18",라이프:"photo-1490645935967-10de6ba17061",과학:"photo-1532094349884-543bc11b234d",문화:"photo-1513364776144-60967b0f800f"};
  const photo=fallback[category]||"photo-1451187580459-43490279c0fa";
  return {url:"https://images.unsplash.com/"+photo+"?auto=format&fit=crop&w=1400&q=82",alt:title,credit:"Unsplash (editorial image)"};
 }
