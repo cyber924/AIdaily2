@@ -1,0 +1,20 @@
+name = "aidaily2"
+main = "src/index.ts"
+compatibility_date = "2026-11-27"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "aidaily2-db"
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+[vars]
+APP_TIMEZONE = "Asia/Seoul"
+GEMINI_MODEL = "gemini-3.8-flash"
+UNSPLASH_SOURCE = "unsplash"
