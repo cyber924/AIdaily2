@@ -11,7 +11,7 @@ not_found_handling = "single-page-application"
 [[d1_databases]]
 binding = "DB"
 database_name = "aidaily2-db"
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+database_id = "23a759cf-81f2-46b5-a8a7-f62e3f76dfb7"
 migrations_dir = "migrations"
 
 [vars]
