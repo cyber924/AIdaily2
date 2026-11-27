@@ -96,6 +96,18 @@ async function handle(request:Request,env:Env){
  if(path==="/api/articles"&&request.method==="POST"){
   const b:any=await request.json();const articleId=id(),stamp=now();await env.DB.prepare("INSERT INTO articles(id,title,summary,content,category,image_url,image_alt,image_credit,status,created_at,published_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)").bind(articleId,safeText(b.title,240),safeText(b.summary,700),safeText(b.content,12000),safeText(b.category,40)||"시사",safeText(b.image_url,2000),safeText(b.image_alt,500),safeText(b.image_credit,500),b.status==="draft"?"draft":"published",stamp,b.status==="draft"?null:stamp,stamp).run();return json({ok:true,id:articleId});
  }
+ if(path==="/api/images"&&request.method==="GET"){
+  const query=safeText(url.searchParams.get("query"),180);if(!env.UNSPLASH_ACCESS_KEY)return json({error:"이미지 검색을 사용하려면 UNSPLASH_ACCESS_KEY Worker secret을 등록하세요."},400);
+  const u=new URL("https://api.unsplash.com/search/photos");u.searchParams.set("query",query);u.searchParams.set("orientation","landscape");u.searchParams.set("per_page","12");
+  const r=await fetch(u,{headers:{Authorization:"Client-ID "+env.UNSPLASH_ACCESS_KEY}});const d:any=await r.json();if(!r.ok)return json({error:d?.errors?.[0]||"Unsplash 검색 실패"},502);
+  return json((d.results||[]).map((p:any)=>({url:p.urls?.regular,alt:p.alt_description||query,credit:"Photo by "+(p.user?.name||"Unsplash")+" on Unsplash",link:p.links?.html})));
+ }
+ if(path.startsWith("/api/articles/")&&request.method==="PUT"){
+  const articleId=path.split("/").pop();const b:any=await request.json();const stamp=now();
+  await env.DB.prepare("UPDATE articles SET title=?,summary=?,content=?,category=?,image_url=?,image_alt=?,image_credit=?,status=?,published_at=CASE WHEN ?='published' THEN COALESCE(published_at,?) ELSE published_at END,updated_at=? WHERE id=?")
+   .bind(safeText(b.title,240),safeText(b.summary,700),safeText(b.content,12000),safeText(b.category,40),safeText(b.image_url,2000),safeText(b.image_alt,500),safeText(b.image_credit,500),b.status==="draft"?"draft":"published",b.status==="draft"?"draft":"published",stamp,stamp,articleId).run();
+  return json({ok:true});
+ }
  if(path.startsWith("/api/articles/")&&request.method==="DELETE"){const articleId=path.split("/").pop();await env.DB.prepare("UPDATE articles SET status='archived',updated_at=? WHERE id=?").bind(now(),articleId).run();return json({ok:true});}
  if(path==="/api/news"&&request.method==="GET"){const items=await collectNews();return json(items.slice(0,50));}
  if(path==="/api/generate"&&request.method==="POST"){const b:any=await request.json();const created=await createBriefing(env,safeText(b.category,40)||undefined,safeText(b.topic,300)||undefined);return json({ok:true,articles:created});}
