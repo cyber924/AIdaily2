@@ -33,9 +33,12 @@ async function collectNews(){
 async function gemini(env:Env,prompt:string){
  if(!env.GEMINI_API_KEY)throw new Error("GEMINI_API_KEY Worker secret이 등록되지 않았습니다.");
  const model=env.GEMINI_MODEL||"gemini-3.8-flash";
- const response=await fetch("https://generativelanguage.googleapis.com/v1beta/models/"+model+":generateContent?key="+env.GEMINI_API_KEY,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({contents:[{parts:[{text:prompt}]}],generationConfig:{temperature:0.55,maxOutputTokens:2200}}),signal:AbortSignal.timeout(45000)});
- const body:any=await response.json();if(!response.ok)throw new Error(body?.error?.message||"Gemini API 호출 실패");
- return body?.candidates?.[0]?.content?.parts?.map((p:any)=>p.text||"").join("\n")||"";
+ const response=await fetch("https://generativelanguage.googleapis.com/v1beta/models/"+model+":generateContent",{method:"POST",headers:{"content-type":"application/json","x-goog-api-key":env.GEMINI_API_KEY},body:JSON.stringify({contents:[{role:"user",parts:[{text:prompt}]}],generationConfig:{temperature:0.45,maxOutputTokens:8192,responseMimeType:"application/json"}}),signal:AbortSignal.timeout(60000)});
+ const body:any=await response.json();if(!response.ok)throw new Error("Gemini API "+response.status+": "+(body?.error?.message||"호출 실패"));
+ const candidate=body?.candidates?.[0];if(!candidate)throw new Error("Gemini 응답에 생성 결과가 없습니다: "+(body?.promptFeedback?.blockReason||"응답 차단 또는 빈 응답"));
+ const text=candidate?.content?.parts?.map((p:any)=>p.text||"").join("\\n")||"";
+ if(!text.trim())throw new Error("Gemini가 빈 응답을 반환했습니다. finishReason="+(candidate.finishReason||"unknown"));
+ return text;
 }
 function imageQuery(category:string,title:string){
  const map:Record<string,string>={시사:"world news parliament city",경제:"finance stock market business",IT:"artificial intelligence technology computer",산업:"modern industry factory",금융:"finance banking investment",정치:"government parliament",사회:"city people community",라이프:"lifestyle daily life",과학:"science laboratory research",문화:"art culture museum"};
@@ -60,7 +63,11 @@ async function createBriefing(env:Env,category?:string,topic?:string){
  if(!fresh.length)throw new Error("새로운 뉴스가 없습니다. 기존 기사를 중복 발행하지 않았습니다.");
  const prompt="당신은 한국어 전문 뉴스 브리핑 편집장이다. 아래 기사 원문 제목과 링크를 근거로 각 기사를 독립된 브리핑으로 작성한다. 사실을 창작하지 말고 확인되지 않은 수치와 인용을 만들지 않는다. 각 항목은 제목, 2~3문장 요약, 맥락과 영향 분석을 포함한다. 응답은 JSON 배열만 반환한다. 각 객체 형식: {title,summary,content}. content는 500~800자.\n"+JSON.stringify(fresh);
  const raw=await gemini(env,prompt);const clean=raw.replace(/^\s*```(?:json)?/i,"").replace(/```\s*$/,"").trim();
- const parsed=JSON.parse(clean);const created=[];
+ const jsonStart=clean.indexOf("[");const jsonEnd=clean.lastIndexOf("]");
+ if(jsonStart<0||jsonEnd<jsonStart)throw new Error("Gemini 응답이 JSON 배열 형식이 아닙니다. 응답 일부: "+clean.slice(0,180));
+ let parsed:any;try{parsed=JSON.parse(clean.slice(jsonStart,jsonEnd+1));}catch{throw new Error("Gemini JSON 응답을 해석하지 못했습니다. 다시 생성해 주세요.");}
+ if(!Array.isArray(parsed)||!parsed.length)throw new Error("Gemini가 유효한 브리핑 목록을 반환하지 않았습니다.");
+ const created=[];
  for(let i=0;i<fresh.length;i++){
   const src=fresh[i],a=parsed[i];if(!a?.title||!a?.content)continue;
   const image=await unsplash(env,src.category,a.title);const articleId=id();const stamp=now();
