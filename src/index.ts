@@ -71,7 +71,7 @@ async function unsplash(env:Env,category:string,title:string){
  const photo=fallback[category]||"photo-1451187580459-43490279c0fa";
  return {url:"https://images.unsplash.com/"+photo+"?auto=format&fit=crop&w=1400&q=82",alt:title,credit:"Unsplash (editorial image)"};
 }
-async function createBriefing(env:Env,category?:string,topic?:string){
+async function createBriefing(env:Env,category?:string,topic?:string,ownerUserId?:string){
  const candidates=await collectNews();const chosen=candidates.filter(x=>!category||x.category===category).slice(0,category?3:8);
  if(!chosen.length)throw new Error("선택한 분야의 최신 뉴스가 없습니다.");
  const saved=await env.DB.prepare("SELECT source_url FROM articles WHERE source_url != '' ORDER BY created_at DESC LIMIT 300").all<any>();
@@ -88,8 +88,8 @@ async function createBriefing(env:Env,category?:string,topic?:string){
  for(let i=0;i<fresh.length;i++){
   const src=fresh[i],a=parsed[i];if(!a?.title||!a?.content)continue;
   const image=await unsplash(env,src.category,a.title);const articleId=id();const stamp=now();
-  await env.DB.prepare("INSERT INTO articles(id,title,summary,content,category,source_title,source_url,image_url,image_alt,image_credit,status,created_at,published_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?, 'published',?,?,?)")
-   .bind(articleId,safeText(a.title,240),safeText(a.summary,700),safeText(a.content,8000),src.category,src.title,src.url,image.url,image.alt,image.credit,stamp,stamp,stamp).run();
+  await env.DB.prepare("INSERT INTO articles(id,title,summary,content,category,source_title,source_url,image_url,image_alt,image_credit,status,created_at,published_at,updated_at,owner_user_id) VALUES(?,?,?,?,?,?,?,?,?,?, 'published',?,?,?,?)")
+   .bind(articleId,safeText(a.title,240),safeText(a.summary,700),safeText(a.content,8000),src.category,src.title,src.url,image.url,image.alt,image.credit,stamp,stamp,stamp,ownerUserId||null).run();
   await env.DB.prepare("INSERT OR IGNORE INTO news_sources(id,title,url,category,published_at,fetched_at) VALUES(?,?,?,?,?,?)").bind(id(),src.title,src.url,src.category,src.publishedAt,stamp).run();
   created.push({id:articleId,title:a.title,category:src.category,imageUrl:image.url,sourceUrl:src.url});
  }
@@ -149,7 +149,7 @@ async function publishDue(env:Env){
   const claimed=await env.DB.prepare("UPDATE publish_queue SET status='processing',updated_at=? WHERE id=? AND status='queued'").bind(now(),q.id).run();
   if(!claimed.meta.changes)continue;
   try{
-   const result=await createBriefing(env,q.category,q.topic);const article=result[0];
+   const result=await createBriefing(env,q.category,q.topic,q.owner_user_id||undefined);const article=result[0];
    await env.DB.prepare("UPDATE publish_queue SET status='published',article_id=?,error='',updated_at=? WHERE id=?").bind(article.id,now(),q.id).run();results.push({id:q.id,status:"published",article});
   }catch(e){await env.DB.prepare("UPDATE publish_queue SET status='failed',error=?,updated_at=? WHERE id=?").bind(safeText((e as Error).message,1000),now(),q.id).run();results.push({id:q.id,status:"failed",error:(e as Error).message});}
  }
@@ -245,7 +245,7 @@ async function handle(request:Request,env:Env){
  }
  if(path.startsWith("/api/articles/")&&request.method==="DELETE"){if(!await requireUser(request,env))return json({error:"로그인이 필요합니다."},401);const articleId=path.split("/").pop();await env.DB.prepare("UPDATE articles SET status='archived',updated_at=? WHERE id=?").bind(now(),articleId).run();return json({ok:true});}
  if(path==="/api/news"&&request.method==="GET"){const items=await collectNews();return json(items.slice(0,50));}
- if(path==="/api/generate"&&request.method==="POST"){if(!await requireUser(request,env))return json({error:"로그인이 필요합니다."},401);const b:any=await request.json();const created=await createBriefing(env,safeText(b.category,40)||undefined,safeText(b.topic,300)||undefined);return json({ok:true,articles:created});}
+ if(path==="/api/generate"&&request.method==="POST"){const user=await requireUser(request,env);if(!user)return json({error:"로그인이 필요합니다."},401);const b:any=await request.json();const created=await createBriefing(env,safeText(b.category,40)||undefined,safeText(b.topic,300)||undefined,user.id);return json({ok:true,articles:created});}
  if(path==="/api/agent"&&request.method==="POST"){
   if(!await requireUser(request,env))return json({error:"로그인이 필요합니다."},401);
   const b:any=await request.json();const command=safeText(b.command,1000);if(!command)return json({error:"명령을 입력하세요."},400);
@@ -256,7 +256,7 @@ async function handle(request:Request,env:Env){
    await env.DB.prepare("INSERT INTO publish_queue(id,topic,category,scheduled_at,status,created_at,updated_at,owner_user_id) VALUES(?,?,?,?,?,?,?,?)").bind(qid,command,categories.find(c=>command.includes(c))||"시사",dt.toISOString(),"queued",stamp,stamp,(await requireUser(request,env)).id).run();
    return json({ok:true,message:"예약 대기열에 등록했습니다.",id:qid});
   }
-  if(/뉴스|브리핑|발행|작성|만들어|생성/.test(command)){const cat=categories.find(c=>command.includes(c));const result=await createBriefing(env,cat);return json({ok:true,message:result.length+"건의 브리핑을 생성하고 발행했습니다.",articles:result});}
+  if(/뉴스|브리핑|발행|작성|만들어|생성/.test(command)){const cat=categories.find(c=>command.includes(c));const result=await createBriefing(env,cat,undefined,(await requireUser(request,env)).id);return json({ok:true,message:result.length+"건의 브리핑을 생성하고 발행했습니다.",articles:result});}
 
   return json({ok:true,message:"명령을 이해했습니다. '오늘 IT 뉴스 브리핑 발행해줘' 또는 '2026-11-28 09:00 시사 뉴스 예약해줘'처럼 요청해 주세요."});
  }
