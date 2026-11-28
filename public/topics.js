@@ -97,7 +97,7 @@
       <section class="topic-library"><div class="topic-section-heading"><div><span class="topic-section-kicker">YOUR DAILY LIBRARY</span><h2>나의 ${esc(topic.label)} 콘텐츠</h2><p>오늘 생성한 콘텐츠와 지난 기록을 이곳에서 이어서 볼 수 있습니다.</p></div><a class="topic-all-link" href="/#daily-life">전체 라이프 보기 ↗</a></div><div id="topicContentList" class="topic-content-grid"><div class="empty">콘텐츠를 불러오는 중입니다…</div></div></section>
       <section class="topic-bottom"><div><span class="topic-section-kicker">A BETTER DAY STARTS HERE</span><h2>매일 조금 더 나은 하루를<br>만들어 보세요.</h2></div><a href="/" class="topic-home-cta">AIdaily 전체 둘러보기 ↗</a></section>`;
     root.querySelector("#topicGenerate").addEventListener("click", async () => {
-      if (!window.authUser) { if (typeof openAuth==="function") openAuth("login"); return; }
+      if (typeof authUser==="undefined" || !authUser) { if (typeof openAuth==="function") openAuth("login"); return; }
       const button=root.querySelector("#topicGenerate");
       button.disabled=true;button.textContent="생성 중…";
       try {
