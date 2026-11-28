@@ -39,13 +39,13 @@ function parseRss(xml:string,category:string){
  return out;
 }
 async function collectNews(){
- const feeds=[["시사","NATION"],["경제","BUSINESS"],["IT","TECHNOLOGY"],["과학","SCIENCE"],["건강","HEALTH"]];
+ const feeds:[string,string][]=[["시사","NATION"],["정치","NATION"],["사회","NATION"],["경제","BUSINESS"],["금융","BUSINESS"],["산업","BUSINESS"],["IT","TECHNOLOGY"],["과학","SCIENCE"],["라이프","HEALTH"],["문화","ENTERTAINMENT"]];
  const all=await Promise.all(feeds.map(async([category,topic])=>{
   const res=await fetch("https://news.google.com/rss/headlines/section/topic/"+topic+"?hl=ko&gl=KR&ceid=KR:ko",{headers:{"user-agent":"AIdaily2/1.0"},signal:AbortSignal.timeout(12000)});
   if(!res.ok)throw new Error("Google 뉴스 피드 오류: "+category);
   return parseRss(await res.text(),category);
  }));
- return all.flat().sort((a,b)=>b.publishedAt.localeCompare(a.publishedAt));
+ const seen=new Set<string>();return all.flat().filter(item=>{if(seen.has(item.url))return false;seen.add(item.url);return true}).sort((a,b)=>b.publishedAt.localeCompare(a.publishedAt));
 }
 async function gemini(env:Env,prompt:string){
  if(!env.GEMINI_API_KEY)throw new Error("GEMINI_API_KEY Worker secret이 등록되지 않았습니다.");
@@ -78,7 +78,7 @@ async function createBriefing(env:Env,category?:string,topic?:string){
  const known=new Set((saved.results||[]).map((x:any)=>x.source_url));
  const fresh=chosen.filter(x=>!known.has(x.url)).slice(0,category?1:5);
  if(!fresh.length)throw new Error("새로운 뉴스가 없습니다. 기존 기사를 중복 발행하지 않았습니다.");
- const prompt="당신은 한국어 전문 뉴스 브리핑 편집장이다. 아래 기사 원문 제목과 링크를 근거로 각 기사를 독립된 브리핑으로 작성한다. 사실을 창작하지 말고 확인되지 않은 수치와 인용을 만들지 않는다. 각 항목은 제목, 2~3문장 요약, 맥락과 영향 분석을 포함한다. 응답은 JSON 배열만 반환한다. 각 객체 형식: {title,summary,content}. content는 500~800자.\n"+JSON.stringify(fresh);
+ const prompt="당신은 한국어 전문 뉴스 브리핑 편집장이다. 아래 Google News 기사 제목과 URL을 바탕으로 사실을 과장하지 않는 전문 브리핑을 작성한다. 원문을 직접 확인하지 못한 세부 사실·수치·인용을 창작하지 말고, 제목에서 확인 가능한 내용과 일반적 맥락을 구분한다. 각 항목은 매력적인 한국어 제목, 2~3문장 요약, 배경·영향·독자가 주목할 점을 포함한 본문으로 구성한다. 본문은 한국어 500~800자. 반드시 JSON 배열만 반환하고 각 객체는 {title,summary,content} 형식을 지킨다. 요청 주제: "+(topic||"오늘의 주요 이슈")+". 기사 데이터: "+JSON.stringify(fresh);
  const raw=await gemini(env,prompt);const clean=raw.replace(/^\s*```(?:json)?/i,"").replace(/```\s*$/,"").trim();
  const jsonStart=clean.indexOf("[");const jsonEnd=clean.lastIndexOf("]");
  if(jsonStart<0||jsonEnd<jsonStart)throw new Error("Gemini 응답이 JSON 배열 형식이 아닙니다. 응답 일부: "+clean.slice(0,180));
