@@ -1,0 +1,38 @@
+name: AIdaily2 validation
+on:
+  push:
+    branches: [main, feature/daily-life-platform]
+  pull_request:
+    branches: [main]
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install
+      - run: npm run typecheck
+      - name: Check browser JavaScript syntax
+        run: node --check public/app.js
+      - name: Validate D1 migration sequence
+        run: |
+          python - <<'PY'
+          import sqlite3
+          db = sqlite3.connect(":memory:")
+          for path in [
+              "migrations/0001_initial.sql",
+              "migrations/0002_auth.sql",
+              "migrations/0003_daily_life.sql",
+          ]:
+              with open(path, encoding="utf-8") as f:
+                  db.executescript(f.read())
+          tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+          required = {"articles", "publish_queue", "users", "sessions", "user_profiles", "daily_contents", "quiz_attempts", "daily_generation_locks"}
+          missing = required - tables
+          assert not missing, f"Missing tables: {missing}"
+          columns = {row[1] for row in db.execute("PRAGMA table_info(articles)")}
+          assert "owner_user_id" in columns, "articles.owner_user_id missing"
+          print("D1 migrations 0001-0003 validated")
+          PY

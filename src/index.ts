@@ -71,7 +71,7 @@ async function unsplash(env:Env,category:string,title:string){
  const photo=fallback[category]||"photo-1451187580459-43490279c0fa";
  return {url:"https://images.unsplash.com/"+photo+"?auto=format&fit=crop&w=1400&q=82",alt:title,credit:"Unsplash (editorial image)"};
 }
-async function createBriefing(env:Env,category?:string,topic?:string){
+async function createBriefing(env:Env,category?:string,topic?:string,ownerUserId?:string){
  const candidates=await collectNews();const chosen=candidates.filter(x=>!category||x.category===category).slice(0,category?3:8);
  if(!chosen.length)throw new Error("선택한 분야의 최신 뉴스가 없습니다.");
  const saved=await env.DB.prepare("SELECT source_url FROM articles WHERE source_url != '' ORDER BY created_at DESC LIMIT 300").all<any>();
@@ -88,22 +88,91 @@ async function createBriefing(env:Env,category?:string,topic?:string){
  for(let i=0;i<fresh.length;i++){
   const src=fresh[i],a=parsed[i];if(!a?.title||!a?.content)continue;
   const image=await unsplash(env,src.category,a.title);const articleId=id();const stamp=now();
-  await env.DB.prepare("INSERT INTO articles(id,title,summary,content,category,source_title,source_url,image_url,image_alt,image_credit,status,created_at,published_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?, 'published',?,?,?)")
-   .bind(articleId,safeText(a.title,240),safeText(a.summary,700),safeText(a.content,8000),src.category,src.title,src.url,image.url,image.alt,image.credit,stamp,stamp,stamp).run();
+  await env.DB.prepare("INSERT INTO articles(id,title,summary,content,category,source_title,source_url,image_url,image_alt,image_credit,status,created_at,published_at,updated_at,owner_user_id) VALUES(?,?,?,?,?,?,?,?,?,?, 'published',?,?,?,?)")
+   .bind(articleId,safeText(a.title,240),safeText(a.summary,700),safeText(a.content,8000),src.category,src.title,src.url,image.url,image.alt,image.credit,stamp,stamp,stamp,ownerUserId||null).run();
   await env.DB.prepare("INSERT OR IGNORE INTO news_sources(id,title,url,category,published_at,fetched_at) VALUES(?,?,?,?,?,?)").bind(id(),src.title,src.url,src.category,src.publishedAt,stamp).run();
   created.push({id:articleId,title:a.title,category:src.category,imageUrl:image.url,sourceUrl:src.url});
  }
  await env.DB.prepare("INSERT INTO generation_runs(id,action,status,detail,created_at) VALUES(?,?,?,?,?)").bind(id(),"news-briefing","success",created.length+" articles",now()).run();
  return created;
 }
-async function publishDue(env:Env){
- const due=await env.DB.prepare("SELECT * FROM publish_queue WHERE status='queued' AND scheduled_at<=? ORDER BY scheduled_at LIMIT 5").bind(now()).all<any>();
+
+const DAILY_TYPES = ["fortune","diet","exercise","music","history","quiz","shopping","recommendation","weather"] as const;
+type DailyType = typeof DAILY_TYPES[number];
+const DAILY_LABELS: Record<DailyType,string> = {fortune:"오늘의 운세",diet:"오늘의 식단",exercise:"오늘의 운동",music:"오늘의 음악",history:"오늘의 역사",quiz:"오늘의 O/X 퀴즈",shopping:"스마트 쇼핑",recommendation:"라이프 추천",weather:"오늘의 날씨"};
+const DAILY_PROMPTS: Record<DailyType,string> = {
+ fortune:"별자리·띠·MBTI 운세. 미래를 사실처럼 단정하지 않는다. JSON {title,summary,zodiacFortune,chineseZodiacFortune,mbtiFortune,advice}",
+ diet:"건강한 하루 식단. JSON {title,summary,breakfast:{menu,description,calories},lunch:{menu,description,calories},dinner:{menu,description,calories},nutritionNote}. 의료 처방 금지.",
+ exercise:"초중급자 안전 운동 루틴. JSON {title,summary,morning:{name,description,duration},lunch:{name,description,duration},evening:{name,description,duration},safetyNote}. 통증 시 중단 안내.",
+ music:"시간대별 음악 큐레이션. JSON {title,summary,morning:{song,artist,mood,description,searchUrl},lunch:{song,artist,mood,description,searchUrl},evening:{song,artist,mood,description,searchUrl}}. 실제 곡 여부를 단정하지 말고 검색 링크 제공.",
+ history:"흥미로운 역사 이야기 세 가지. 확인되지 않은 사실 창작 금지. JSON {title,summary,morning:{title,description},lunch:{title,description},evening:{title,description}}",
+ quiz:"정확한 상식 O/X 퀴즈. JSON {title,summary,question,answer,explanation}. answer는 O 또는 X.",
+ shopping:"허위 가격·재고 없이 상품군과 선택 기준 추천. JSON {title,summary,morning:{item,description,criteria},lunch:{item,description,criteria},evening:{item,description,criteria}}",
+ recommendation:"맛집·여행지·숙소 추천 아이디어와 선택 기준. JSON {title,summary,restaurant:{name,description},travelDestination:{name,description},accommodation:{name,description}}",
+ weather:"실시간 관측자료 미연결 시 기온·강수량 창작 금지. 날씨 확인 항목과 준비 팁. JSON {title,summary,condition,temperature,advice,sourceNote}"
+};
+function parseDailyJson(raw: string) {
+ const start=raw.indexOf("{"),end=raw.lastIndexOf("}");
+ if(start<0||end<start) throw new Error("AI 응답을 JSON으로 해석할 수 없습니다.");
+ return JSON.parse(raw.slice(start,end+1));
+}
+
+async function fetchWeatherBriefing(location:string,date:string){
+ const geoUrl=new URL("https://geocoding-api.open-meteo.com/v1/search");
+ geoUrl.searchParams.set("name",location||"Seoul");geoUrl.searchParams.set("count","1");geoUrl.searchParams.set("language","ko");geoUrl.searchParams.set("format","json");
+ const geoResponse=await fetch(geoUrl.toString(),{signal:AbortSignal.timeout(10000)});
+ if(!geoResponse.ok)throw new Error("날씨 위치 검색에 실패했습니다.");
+ const geo:any=await geoResponse.json(),place=geo.results&&geo.results[0];
+ if(!place)throw new Error("지역을 찾지 못했습니다. 프로필에 영문 도시명을 입력해 주세요.");
+ const weatherUrl=new URL("https://api.open-meteo.com/v1/forecast");
+ weatherUrl.searchParams.set("latitude",String(place.latitude));weatherUrl.searchParams.set("longitude",String(place.longitude));
+ weatherUrl.searchParams.set("daily","weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max");
+ weatherUrl.searchParams.set("timezone",envTimeZoneForWeather());weatherUrl.searchParams.set("forecast_days","1");
+ const weatherResponse=await fetch(weatherUrl.toString(),{signal:AbortSignal.timeout(10000)});
+ if(!weatherResponse.ok)throw new Error("실시간 날씨 정보를 불러오지 못했습니다.");
+ const data:any=await weatherResponse.json(),daily=data.daily||{},code=Number(daily.weather_code?.[0]);
+ const labels:Record<number,string>={0:"맑음",1:"대체로 맑음",2:"부분적으로 흐림",3:"흐림",45:"안개",48:"짙은 안개",51:"약한 이슬비",53:"이슬비",55:"강한 이슬비",61:"약한 비",63:"비",65:"강한 비",71:"약한 눈",73:"눈",75:"강한 눈",80:"소나기",81:"강한 소나기",82:"매우 강한 소나기",95:"뇌우",96:"우박 동반 뇌우",99:"강한 우박 동반 뇌우"};
+ const min=daily.temperature_2m_min?.[0],max=daily.temperature_2m_max?.[0],rain=daily.precipitation_probability_max?.[0];
+ const condition=labels[code]||"변화 가능 날씨";
+ const advice=Number(rain)>=50?"우산을 챙기고 방수 신발을 고려하세요.":Number(min)<=5?"아침과 밤에는 보온에 신경 쓰세요.":Number(max)>=28?"수분을 충분히 섭취하고 한낮 야외활동을 줄이세요.":"가벼운 겉옷을 준비하면 좋습니다.";
+ return {title:place.name+" 오늘의 날씨",summary:date+" 기준 "+condition+" · 최저 "+min+"°C / 최고 "+max+"°C",condition,temperature:{minC:min,maxC:max},precipitationProbability:rain,advice,source:"Open-Meteo",sourceUrl:"https://open-meteo.com/",location:place.name};
+}
+function envTimeZoneForWeather(){return "Asia/Seoul";}
+
+async function createDaily(env: Env,user: any,type: DailyType,preferences: string) {
+ const date=new Intl.DateTimeFormat("en-CA",{timeZone:env.APP_TIMEZONE || "Asia/Seoul",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
+ const cached=async()=>env.DB.prepare("SELECT * FROM daily_contents WHERE owner_key=? AND content_type=? AND content_date=?").bind(user.id,type,date).first<any>();
+ const old=await cached();
+ if(old)return {item:{...old,content:JSON.parse(old.content_json)},reused:true};
+ const lockKey=user.id+":"+type+":"+date,stamp=now(),staleBefore=new Date(Date.now()-15*60*1000).toISOString();
+ const lock=await env.DB.prepare("INSERT INTO daily_generation_locks(lock_key,created_at) VALUES(?,?) ON CONFLICT(lock_key) DO UPDATE SET created_at=excluded.created_at WHERE daily_generation_locks.created_at<?").bind(lockKey,stamp,staleBefore).run();
+ if(!lock.meta.changes){
+  const afterWait=await cached();
+  if(afterWait)return {item:{...afterWait,content:JSON.parse(afterWait.content_json)},reused:true};
+  throw new Error("같은 콘텐츠를 생성하고 있습니다. 잠시 후 다시 확인해 주세요.");
+ }
+ try {
+  const profile=await env.DB.prepare("SELECT * FROM user_profiles WHERE user_id=?").bind(user.id).first<any>();
+  const prompt="한국어 데일리 매거진 에디터로서 "+date+" 콘텐츠 작성. "+DAILY_PROMPTS[type]+"\n사용자 선호: "+safeText(preferences,1200)+"\n프로필: "+JSON.stringify(profile || {})+"\nJSON 객체만 반환.";
+  const content=type==="weather"?await fetchWeatherBriefing(safeText(profile?.location,80)||"Seoul",date):parseDailyJson(await gemini(env,prompt));
+  if(type==="quiz" && !["O","X"].includes(content.answer))throw new Error("퀴즈 정답 형식 오류");
+  const contentId=id(),title=safeText(content.title,180)||DAILY_LABELS[type],summary=safeText(content.summary,600),contentJson=JSON.stringify(content);
+  await env.DB.prepare("INSERT INTO daily_contents(id,owner_key,content_type,content_date,title,summary,content_json,created_at) VALUES(?,?,?,?,?,?,?,?)").bind(contentId,user.id,type,date,title,summary,contentJson,stamp).run();
+  await env.DB.prepare("INSERT INTO generation_runs(id,action,status,detail,created_at) VALUES(?,?,?,?,?)").bind(id(),"daily-"+type,"success",user.id+":"+date,stamp).run();
+  return {item:{id:contentId,owner_key:user.id,content_type:type,content_date:date,title,summary,content_json:contentJson,content,created_at:stamp},reused:false};
+ } finally {
+  await env.DB.prepare("DELETE FROM daily_generation_locks WHERE lock_key=?").bind(lockKey).run();
+ }
+}
+
+async function publishDue(env:Env,ownerUserId:string){
+ const due=await env.DB.prepare("SELECT * FROM publish_queue WHERE owner_user_id=? AND status='queued' AND scheduled_at<=? ORDER BY scheduled_at LIMIT 5").bind(ownerUserId,now()).all<any>();
  const results=[];
  for(const q of due.results||[]){
   const claimed=await env.DB.prepare("UPDATE publish_queue SET status='processing',updated_at=? WHERE id=? AND status='queued'").bind(now(),q.id).run();
   if(!claimed.meta.changes)continue;
   try{
-   const result=await createBriefing(env,q.category,q.topic);const article=result[0];
+   const result=await createBriefing(env,q.category,q.topic,q.owner_user_id||undefined);const article=result[0];
    await env.DB.prepare("UPDATE publish_queue SET status='published',article_id=?,error='',updated_at=? WHERE id=?").bind(article.id,now(),q.id).run();results.push({id:q.id,status:"published",article});
   }catch(e){await env.DB.prepare("UPDATE publish_queue SET status='failed',error=?,updated_at=? WHERE id=?").bind(safeText((e as Error).message,1000),now(),q.id).run();results.push({id:q.id,status:"failed",error:(e as Error).message});}
  }
@@ -138,6 +207,43 @@ async function handle(request:Request,env:Env){
   return new Response(JSON.stringify({ok:true}),{headers:{"content-type":"application/json; charset=utf-8","cache-control":"no-store","Set-Cookie":"aidaily_session=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0"}});
  }
  if(path==="/api/health")return json({ok:true,service:"AIdaily2",database:"D1",aiConfigured:!!env.GEMINI_API_KEY,model:env.GEMINI_MODEL||"gemini-3.8-flash",login:"email-password"});
+
+ if(path==="/api/profile"&&request.method==="GET"){
+  const user=await requireUser(request,env);if(!user)return json({error:"로그인이 필요합니다."},401);
+  const p=await env.DB.prepare("SELECT preferences_json,location,zodiac_sign,chinese_zodiac_sign,mbti_type,updated_at FROM user_profiles WHERE user_id=?").bind(user.id).first<any>();
+  return json(p||{preferences_json:"{}",location:"Seoul",zodiac_sign:"",chinese_zodiac_sign:"",mbti_type:""});
+ }
+ if(path==="/api/profile"&&request.method==="PUT"){
+  const user=await requireUser(request,env);if(!user)return json({error:"로그인이 필요합니다."},401);
+  const b:any=await request.json(),stamp=now(),prefs=JSON.stringify(typeof b.preferences==="object"&&b.preferences?b.preferences:{});
+  await env.DB.prepare("INSERT INTO user_profiles(user_id,preferences_json,location,zodiac_sign,chinese_zodiac_sign,mbti_type,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET preferences_json=excluded.preferences_json,location=excluded.location,zodiac_sign=excluded.zodiac_sign,chinese_zodiac_sign=excluded.chinese_zodiac_sign,mbti_type=excluded.mbti_type,updated_at=excluded.updated_at")
+   .bind(user.id,prefs,safeText(b.location,80)||"Seoul",safeText(b.zodiac_sign,40),safeText(b.chinese_zodiac_sign,40),safeText(b.mbti_type,8),stamp).run();
+  return json({ok:true});
+ }
+ if(path==="/api/daily"&&request.method==="GET"){
+  const user=await requireUser(request,env);if(!user)return json({error:"로그인이 필요합니다."},401);
+  const type=safeText(url.searchParams.get("type"),30);
+  if(type&&!DAILY_TYPES.includes(type as DailyType))return json({error:"지원하지 않는 콘텐츠 유형입니다."},400);
+  const rows=type?await env.DB.prepare("SELECT * FROM daily_contents WHERE owner_key=? AND content_type=? ORDER BY content_date DESC LIMIT 7").bind(user.id,type).all<any>():await env.DB.prepare("SELECT * FROM daily_contents WHERE owner_key=? ORDER BY content_date DESC LIMIT 40").bind(user.id).all<any>();
+  return json((rows.results||[]).map((x:any)=>({...x,content:JSON.parse(x.content_json)})));
+ }
+ if(path==="/api/daily"&&request.method==="POST"){
+  const user=await requireUser(request,env);if(!user)return json({error:"로그인이 필요합니다."},401);
+  const b:any=await request.json(),type=safeText(b.type,30) as DailyType;
+  if(!DAILY_TYPES.includes(type))return json({error:"지원하지 않는 콘텐츠 유형입니다."},400);
+  const result=await createDaily(env,user,type,safeText(b.preferences,1200));
+  return json({ok:true,reused:result.reused,item:result.item});
+ }
+ if(path==="/api/quiz/answer"&&request.method==="POST"){
+  const user=await requireUser(request,env);if(!user)return json({error:"로그인이 필요합니다."},401);
+  const b:any=await request.json(),answer=safeText(b.answer,1),contentId=safeText(b.contentId,80);
+  if(!["O","X"].includes(answer))return json({error:"O 또는 X를 선택하세요."},400);
+  const quiz=await env.DB.prepare("SELECT content_json FROM daily_contents WHERE id=? AND owner_key=? AND content_type='quiz'").bind(contentId,user.id).first<any>();
+  if(!quiz)return json({error:"퀴즈를 찾을 수 없습니다."},404);
+  const parsed=JSON.parse(quiz.content_json),correct=parsed.answer===answer;
+  await env.DB.prepare("INSERT INTO quiz_attempts(id,user_id,content_id,user_answer,is_correct,attempted_at) VALUES(?,?,?,?,?,?)").bind(id(),user.id,contentId,answer,correct?1:0,now()).run();
+  return json({ok:true,correct,explanation:parsed.explanation});
+ }
  if(path==="/api/articles"&&request.method==="GET"){
   const category=url.searchParams.get("category");const status=url.searchParams.get("status")||"published";if(status!=="published"&&!await requireUser(request,env))return json({error:"로그인이 필요합니다."},401);const limit=Math.min(100,Math.max(1,Number(url.searchParams.get("limit")||30)));
   const result=category?await env.DB.prepare("SELECT * FROM articles WHERE status=? AND category=? ORDER BY published_at DESC LIMIT ?").bind(status,category,limit).all():await env.DB.prepare("SELECT * FROM articles WHERE status=? ORDER BY published_at DESC LIMIT ?").bind(status,limit).all();
@@ -162,19 +268,37 @@ async function handle(request:Request,env:Env){
  }
  if(path.startsWith("/api/articles/")&&request.method==="DELETE"){if(!await requireUser(request,env))return json({error:"로그인이 필요합니다."},401);const articleId=path.split("/").pop();await env.DB.prepare("UPDATE articles SET status='archived',updated_at=? WHERE id=?").bind(now(),articleId).run();return json({ok:true});}
  if(path==="/api/news"&&request.method==="GET"){const items=await collectNews();return json(items.slice(0,50));}
- if(path==="/api/generate"&&request.method==="POST"){if(!await requireUser(request,env))return json({error:"로그인이 필요합니다."},401);const b:any=await request.json();const created=await createBriefing(env,safeText(b.category,40)||undefined,safeText(b.topic,300)||undefined);return json({ok:true,articles:created});}
+ if(path==="/api/generate"&&request.method==="POST"){const user=await requireUser(request,env);if(!user)return json({error:"로그인이 필요합니다."},401);const b:any=await request.json();const created=await createBriefing(env,safeText(b.category,40)||undefined,safeText(b.topic,300)||undefined,user.id);return json({ok:true,articles:created});}
  if(path==="/api/agent"&&request.method==="POST"){
   if(!await requireUser(request,env))return json({error:"로그인이 필요합니다."},401);
   const b:any=await request.json();const command=safeText(b.command,1000);if(!command)return json({error:"명령을 입력하세요."},400);
-  if(/예약/.test(command)){const m=command.match(/(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2})/);if(!m)return json({error:"예약 시간은 YYYY-MM-DD HH:mm 형식으로 말해주세요."},400);const dt=new Date(m[1].replace(" ","T")+":00+09:00");if(isNaN(dt.getTime()))return json({error:"예약 시간이 올바르지 않습니다."},400);const qid=id(),stamp=now();await env.DB.prepare("INSERT INTO publish_queue(id,topic,category,scheduled_at,status,created_at,updated_at) VALUES(?,?,?,?, 'queued',?,?)").bind(qid,command,categories.find(c=>command.includes(c))||"시사",dt.toISOString(),stamp,stamp).run();return json({ok:true,message:"예약 대기열에 등록했습니다.",id:qid});}
-  if(/뉴스|브리핑|발행|작성|만들어|생성/.test(command)){const cat=categories.find(c=>command.includes(c));const result=await createBriefing(env,cat);return json({ok:true,message:result.length+"건의 브리핑을 생성하고 발행했습니다.",articles:result});}
+  if(/예약/.test(command)){
+   const m=command.match(/(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2})/);if(!m)return json({error:"예약 시간은 YYYY-MM-DD HH:mm 형식으로 말해주세요."},400);
+   const dt=new Date(m[1].replace(" ","T")+":00+09:00");if(isNaN(dt.getTime()))return json({error:"예약 시간이 올바르지 않습니다."},400);
+   const qid=id(),stamp=now();
+   await env.DB.prepare("INSERT INTO publish_queue(id,topic,category,scheduled_at,status,created_at,updated_at,owner_user_id) VALUES(?,?,?,?,?,?,?,?)").bind(qid,command,categories.find(c=>command.includes(c))||"시사",dt.toISOString(),"queued",stamp,stamp,(await requireUser(request,env)).id).run();
+   return json({ok:true,message:"예약 대기열에 등록했습니다.",id:qid});
+  }
+  if(/뉴스|브리핑|발행|작성|만들어|생성/.test(command)){const cat=categories.find(c=>command.includes(c));const result=await createBriefing(env,cat,undefined,(await requireUser(request,env)).id);return json({ok:true,message:result.length+"건의 브리핑을 생성하고 발행했습니다.",articles:result});}
 
   return json({ok:true,message:"명령을 이해했습니다. '오늘 IT 뉴스 브리핑 발행해줘' 또는 '2026-11-28 09:00 시사 뉴스 예약해줘'처럼 요청해 주세요."});
  }
- if(path==="/api/queue"&&request.method==="GET"){if(!await requireUser(request,env))return json({error:"로그인이 필요합니다."},401);await publishDue(env);const r=await env.DB.prepare("SELECT * FROM publish_queue ORDER BY created_at DESC LIMIT 50").all();return json(r.results);}
- if(path==="/api/queue"&&request.method==="POST"){if(!await requireUser(request,env))return json({error:"로그인이 필요합니다."},401);const b:any=await request.json();const dt=new Date(safeText(b.scheduled_at));if(isNaN(dt.getTime())||dt.getTime()<=Date.now())return json({error:"미래 시간을 선택하세요."},400);const qid=id(),stamp=now();await env.DB.prepare("INSERT INTO publish_queue(id,topic,category,scheduled_at,status,created_at,updated_at) VALUES(?,?,?,?, 'queued',?,?)").bind(safeText(b.topic,300)||"오늘의 뉴스 브리핑",safeText(b.category,40)||"시사",dt.toISOString(),stamp,stamp).run();return json({ok:true,id:qid});}
- if(path.startsWith("/api/queue/")&&request.method==="DELETE"){if(!await requireUser(request,env))return json({error:"로그인이 필요합니다."},401);await env.DB.prepare("UPDATE publish_queue SET status='cancelled',updated_at=? WHERE id=? AND status='queued'").bind(now(),path.split("/").pop()).run();return json({ok:true});}
- if(path==="/api/publish-due"&&request.method==="POST"){if(!await requireUser(request,env))return json({error:"로그인이 필요합니다."},401);return json({results:await publishDue(env)});}
+ if(path==="/api/queue"&&request.method==="GET"){const user=await requireUser(request,env);if(!user)return json({error:"로그인이 필요합니다."},401);await publishDue(env,user.id);const r=await env.DB.prepare("SELECT * FROM publish_queue WHERE owner_user_id=? ORDER BY created_at DESC LIMIT 50").bind(user.id).all();return json(r.results);}
+ if(path==="/api/queue"&&request.method==="POST"){
+  const user=await requireUser(request,env);if(!user)return json({error:"로그인이 필요합니다."},401);
+  const b:any=await request.json();const dt=new Date(safeText(b.scheduled_at));
+  if(isNaN(dt.getTime())||dt.getTime()<=Date.now())return json({error:"미래 시간을 선택하세요."},400);
+  const qid=id(),stamp=now();
+  await env.DB.prepare("INSERT INTO publish_queue(id,topic,category,scheduled_at,status,created_at,updated_at,owner_user_id) VALUES(?,?,?,?,?,?,?,?)")
+   .bind(qid,safeText(b.topic,300)||"오늘의 뉴스 브리핑",safeText(b.category,40)||"시사",dt.toISOString(),"queued",stamp,stamp,user.id).run();
+  return json({ok:true,id:qid});
+ }
+ if(path.startsWith("/api/queue/")&&request.method==="DELETE"){
+  const user=await requireUser(request,env);if(!user)return json({error:"로그인이 필요합니다."},401);
+  await env.DB.prepare("UPDATE publish_queue SET status='cancelled',updated_at=? WHERE id=? AND owner_user_id=? AND status='queued'").bind(now(),path.split("/").pop(),user.id).run();
+  return json({ok:true});
+ }
+ if(path==="/api/publish-due"&&request.method==="POST"){if(!await requireUser(request,env))return json({error:"로그인이 필요합니다."},401);const user=await requireUser(request,env);if(!user)return json({error:"로그인이 필요합니다."},401);return json({results:await publishDue(env,user.id)});}
  return env.ASSETS.fetch(request);
 }
 export default {fetch(request:Request,env:Env){return handle(request,env).catch(e=>json({error:(e as Error).message||"요청 처리 실패"},500));}} satisfies ExportedHandler<Env>;
