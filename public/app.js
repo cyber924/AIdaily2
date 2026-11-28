@@ -20,7 +20,7 @@ renderDailyGrid();renderChips();loadArticles();loadFeed();refreshAuth();document
 // AIdaily2 bulk generation and editorial detail enhancements
 function installDailySelection(){
  const grid=$("#dailyGrid");if(!grid)return;
- grid.innerHTML=dailyTypes.map(x=>'<label class="daily-tile selectable-tile"><input class="daily-check" type="checkbox" value="'+x[0]+'"><span class="daily-icon">'+x[3]+'</span><span class="daily-tile-copy"><b>'+x[1]+'</b><small>'+x[2]+'</small></span><button type="button" data-daily="'+x[0]+'">개별 생성 ↗</button></label>').join("");
+ grid.innerHTML=dailyTypes.map(x=>'<article class="daily-tile selectable-tile"><input class="daily-check" type="checkbox" value="'+x[0]+'"><span class="daily-icon">'+x[3]+'</span><span class="daily-tile-copy"><b>'+x[1]+'</b><small>'+x[2]+'</small></span><button type="button" data-daily="'+x[0]+'">개별 생성 ↗</button></article>').join("");
 }
 function selectedDailyTypes(){return [...document.querySelectorAll(".daily-check:checked")].map(x=>x.value)}
 function updateDailySelection(){const n=selectedDailyTypes().length;$("#dailySelectedCount").textContent=n+"개 선택";$("#generateSelectedDaily").disabled=!n}
