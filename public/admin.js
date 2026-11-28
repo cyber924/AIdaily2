@@ -49,9 +49,15 @@ async function refreshAdminStatus(){
  try{
   const st=await api("/api/admin/status");const nav=$("#adminNav"),panel=$("#adminPanel"),bootstrap=$("#adminBootstrap");
   if(!st.authenticated){nav.hidden=true;panel.hidden=true;return}
-  if(!st.adminExists){nav.hidden=true;panel.hidden=false;bootstrap.hidden=false;$("#adminContentList").innerHTML='<p class="muted">최초 관리자 등록 후 대시보드와 콘텐츠 관리 기능을 사용할 수 있습니다.</p>';return}
+  if(!st.adminExists){
+   nav.hidden=false;nav.href="#adminPanel";nav.textContent="관리자 등록";
+   panel.hidden=false;bootstrap.hidden=false;
+   $("#adminContentList").innerHTML='<p class="muted">최초 관리자 등록 후 대시보드와 콘텐츠 관리 기능을 사용할 수 있습니다.</p>';
+   return;
+  }
   if(!st.isAdmin){nav.hidden=true;panel.hidden=true;return}
-  nav.hidden=false;bootstrap.hidden=true;panel.hidden=location.hash!=="#adminPanel";
+  nav.hidden=false;nav.href="#adminPanel";nav.textContent="관리자";
+  bootstrap.hidden=true;panel.hidden=location.hash!=="#adminPanel";
   if(!adminReady){adminReady=true;loadAdminDashboard()}
  }catch(e){console.warn("관리자 상태 확인 실패",e)}
 }
