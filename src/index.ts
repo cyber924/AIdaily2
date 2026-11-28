@@ -96,6 +96,40 @@ async function createBriefing(env:Env,category?:string,topic?:string){
  await env.DB.prepare("INSERT INTO generation_runs(id,action,status,detail,created_at) VALUES(?,?,?,?,?)").bind(id(),"news-briefing","success",created.length+" articles",now()).run();
  return created;
 }
+
+const DAILY_TYPES = ["fortune","diet","exercise","music","history","quiz","shopping","recommendation","weather"] as const;
+type DailyType = typeof DAILY_TYPES[number];
+const DAILY_LABELS: Record<DailyType,string> = {fortune:"오늘의 운세",diet:"오늘의 식단",exercise:"오늘의 운동",music:"오늘의 음악",history:"오늘의 역사",quiz:"오늘의 O/X 퀴즈",shopping:"스마트 쇼핑",recommendation:"라이프 추천",weather:"오늘의 날씨"};
+const DAILY_PROMPTS: Record<DailyType,string> = {
+ fortune:"별자리·띠·MBTI 운세. 미래를 사실처럼 단정하지 않는다. JSON {title,summary,zodiacFortune,chineseZodiacFortune,mbtiFortune,advice}",
+ diet:"건강한 하루 식단. JSON {title,summary,breakfast:{menu,description,calories},lunch:{menu,description,calories},dinner:{menu,description,calories},nutritionNote}. 의료 처방 금지.",
+ exercise:"초중급자 안전 운동 루틴. JSON {title,summary,morning:{name,description,duration},lunch:{name,description,duration},evening:{name,description,duration},safetyNote}. 통증 시 중단 안내.",
+ music:"시간대별 음악 큐레이션. JSON {title,summary,morning:{song,artist,mood,description,searchUrl},lunch:{song,artist,mood,description,searchUrl},evening:{song,artist,mood,description,searchUrl}}. 실제 곡 여부를 단정하지 말고 검색 링크 제공.",
+ history:"흥미로운 역사 이야기 세 가지. 확인되지 않은 사실 창작 금지. JSON {title,summary,morning:{title,description},lunch:{title,description},evening:{title,description}}",
+ quiz:"정확한 상식 O/X 퀴즈. JSON {title,summary,question,answer,explanation}. answer는 O 또는 X.",
+ shopping:"허위 가격·재고 없이 상품군과 선택 기준 추천. JSON {title,summary,morning:{item,description,criteria},lunch:{item,description,criteria},evening:{item,description,criteria}}",
+ recommendation:"맛집·여행지·숙소 추천 아이디어와 선택 기준. JSON {title,summary,restaurant:{name,description},travelDestination:{name,description},accommodation:{name,description}}",
+ weather:"실시간 관측자료 미연결 시 기온·강수량 창작 금지. 날씨 확인 항목과 준비 팁. JSON {title,summary,condition,temperature,advice,sourceNote}"
+};
+function parseDailyJson(raw: string) {
+ const start=raw.indexOf("{"),end=raw.lastIndexOf("}");
+ if(start<0||end<start) throw new Error("AI 응답을 JSON으로 해석할 수 없습니다.");
+ return JSON.parse(raw.slice(start,end+1));
+}
+async function createDaily(env: Env,user: any,type: DailyType,preferences: string) {
+ const date=new Intl.DateTimeFormat("en-CA",{timeZone:env.APP_TIMEZONE || "Asia/Seoul",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
+ const old=await env.DB.prepare("SELECT * FROM daily_contents WHERE owner_key=? AND content_type=? AND content_date=?").bind(user.id,type,date).first<any>();
+ if(old) return {item:{...old,content:JSON.parse(old.content_json)},reused:true};
+ const profile=await env.DB.prepare("SELECT * FROM user_profiles WHERE user_id=?").bind(user.id).first<any>();
+ const prompt="한국어 데일리 매거진 에디터로서 "+date+" 콘텐츠 작성. "+DAILY_PROMPTS[type]+"\n사용자 선호: "+safeText(preferences,1200)+"\n프로필: "+JSON.stringify(profile || {})+"\nJSON 객체만 반환.";
+ const content=parseDailyJson(await gemini(env,prompt));
+ if(type==="quiz" && !["O","X"].includes(content.answer)) throw new Error("퀴즈 정답 형식 오류");
+ const contentId=id(),stamp=now(),title=safeText(content.title,180)||DAILY_LABELS[type],summary=safeText(content.summary,600);
+ await env.DB.prepare("INSERT INTO daily_contents(id,owner_key,content_type,content_date,title,summary,content_json,created_at) VALUES(?,?,?,?,?,?,?,?)").bind(contentId,user.id,type,date,title,summary,JSON.stringify(content),stamp).run();
+ await env.DB.prepare("INSERT INTO generation_runs(id,action,status,detail,created_at) VALUES(?,?,?,?,?)").bind(id(),"daily-"+type,"success",user.id+":"+date,stamp).run();
+ return {item:{id:contentId,owner_key:user.id,content_type:type,content_date:date,title,summary,content_json:JSON.stringify(content),content,created_at:stamp},reused:false};
+}
+
 async function publishDue(env:Env){
  const due=await env.DB.prepare("SELECT * FROM publish_queue WHERE status='queued' AND scheduled_at<=? ORDER BY scheduled_at LIMIT 5").bind(now()).all<any>();
  const results=[];
