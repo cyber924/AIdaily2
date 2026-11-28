@@ -13,7 +13,7 @@ Cloudflare Workers + D1 기반의 한국어 AI 데일리 브리핑 플랫폼입�
 
 ## Cloudflare 준비
 1. D1 데이터베이스 `aidaily2-db` 생성
-2. 생성된 database_id를 wrangler.toml의 REPLACE_WITH_YOUR_D1_DATABASE_ID에 입력
+2. `wrangler.toml`의 D1 database_id가 Cloudflare의 `aidaily2-db` 실제 ID와 일치하는지 확인
 3. D1 Console에서 migrations/0001_initial.sql 실행 또는 `npx wrangler d1 migrations apply aidaily2-db --remote`
 4. D1 Console에서 `migrations/0002_auth.sql` 실행 (users/sessions 인증 테이블)
 5. Worker secrets 등록:
@@ -28,7 +28,7 @@ Cloudflare Workers + D1 기반의 한국어 AI 데일리 브리핑 플랫폼입�
 `npm install` → `npx wrangler dev`
 
 ## 기능
-- Google News RSS 기반 시사/경제/IT/과학/건강 피드
+- Google News RSS 기반 10개 분야 뉴스 피드 (시사·정치·사회·경제·금융·산업·IT·과학·라이프·문화)
 - Gemini 기반 기사별 브리핑 생성 및 D1 저장
 - Unsplash 주제별 이미지 검색 및 출처 기록
 - 자연어 명령 및 한국어 브라우저 음성 입력
