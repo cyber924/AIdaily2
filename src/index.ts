@@ -251,6 +251,14 @@ async function handle(request:Request,env:Env){
     .bind(articleId,safeText(b.title,240),safeText(b.summary,700),safeText(b.content,12000),safeText(b.category,40)||"라이프",safeText(b.source_title,300),safeText(b.source_url,2000),safeText(b.image_url,2000),safeText(b.image_alt,500),safeText(b.image_credit,500),b.status==="draft"?"draft":"published",stamp,b.status==="draft"?null:stamp,stamp,admin.id).run();
    return json({ok:true,id:articleId});
   }
+
+  if(path==="/api/admin/daily"&&request.method==="POST"){
+   const b:any=await request.json(),type=safeText(b.type,30) as DailyType,content=typeof b.content==="string"?JSON.parse(b.content):b.content;
+   if(!DAILY_TYPES.includes(type)||!content||typeof content!=="object")return json({error:"콘텐츠 유형 또는 JSON을 확인하세요."},400);
+   const stamp=now(),contentId=id(),date=new Intl.DateTimeFormat("en-CA",{timeZone:env.APP_TIMEZONE||"Asia/Seoul",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date()),title=safeText(b.title||content.title,180),summary=safeText(b.summary||content.summary,600);
+   await env.DB.prepare("INSERT INTO daily_contents(id,owner_key,content_type,content_date,title,summary,content_json,created_at) VALUES(?,?,?,?,?,?,?,?)").bind(contentId,admin.id,type,date,title,summary,JSON.stringify({...content,title,summary}),stamp).run();
+   return json({ok:true,id:contentId});
+  }
   if(path.startsWith("/api/admin/daily/")&&request.method==="GET"){
    const row=await env.DB.prepare("SELECT * FROM daily_contents WHERE id=?").bind(path.split("/").pop()).first<any>();
    if(!row)return json({error:"콘텐츠를 찾을 수 없습니다."},404);
