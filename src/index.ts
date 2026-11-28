@@ -294,7 +294,7 @@ async function handle(request:Request,env:Env){
  }
  if(path==="/api/daily/bulk"&&request.method==="POST"){
   const user=await requireUser(request,env);if(!user)return json({error:"로그인이 필요합니다."},401);
-  const b:any=await request.json(),types=Array.isArray(b.types)?[...new Set(b.types)].slice(0,9):[];
+  const b:any=await request.json(),types:DailyType[]=Array.isArray(b.types)?Array.from(new Set(b.types as DailyType[])).slice(0,9):[];
   if(!types.length||types.some((t:any)=>!DAILY_TYPES.includes(t)))return json({error:"생성할 콘텐츠 분야를 선택하세요."},400);
   const results=[];
   for(const type of types){try{const result=await createDaily(env,user,type,safeText(b.preferences,1200));results.push({type,ok:true,reused:result.reused,item:result.item});}catch(e){results.push({type,ok:false,error:safeText((e as Error).message,500)});}}
