@@ -3,6 +3,10 @@ PRAGMA foreign_keys = ON;
 -- Preserve all existing articles and scheduled jobs; ownership is nullable for legacy rows.
 ALTER TABLE articles ADD COLUMN owner_user_id TEXT;
 ALTER TABLE publish_queue ADD COLUMN owner_user_id TEXT;
+-- If the installation has exactly one account, safely attach legacy records to it.
+-- Multi-account installations are left untouched because historical ownership cannot be inferred.
+UPDATE articles SET owner_user_id=(SELECT id FROM users ORDER BY created_at LIMIT 1) WHERE owner_user_id IS NULL AND (SELECT COUNT(*) FROM users)=1;
+UPDATE publish_queue SET owner_user_id=(SELECT id FROM users ORDER BY created_at LIMIT 1) WHERE owner_user_id IS NULL AND (SELECT COUNT(*) FROM users)=1;
 CREATE INDEX IF NOT EXISTS idx_articles_owner_date ON articles(owner_user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_queue_owner_date ON publish_queue(owner_user_id, created_at DESC);
 
