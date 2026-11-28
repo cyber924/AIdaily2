@@ -43,13 +43,42 @@ function parseRss(xml:string,category:string){
  return out;
 }
 async function collectNews(){
- const feeds:[string,string][]=[["시사","NATION"],["정치","NATION"],["사회","NATION"],["경제","BUSINESS"],["금융","BUSINESS"],["산업","BUSINESS"],["IT","TECHNOLOGY"],["과학","SCIENCE"],["라이프","HEALTH"],["문화","ENTERTAINMENT"]];
- const all=await Promise.all(feeds.map(async([category,topic])=>{
-  const res=await fetch("https://news.google.com/rss/headlines/section/topic/"+topic+"?hl=ko&gl=KR&ceid=KR:ko",{headers:{"user-agent":"AIdaily2/1.0"},signal:AbortSignal.timeout(12000)});
-  if(!res.ok)throw new Error("Google 뉴스 피드 오류: "+category);
-  return parseRss(await res.text(),category);
+ const feeds:[string,string,string][]=[
+  ["시사","NATION","대한민국 주요 뉴스"],
+  ["정치","NATION","대한민국 정치 국회 정부"],
+  ["사회","NATION","대한민국 사회 사건 생활"],
+  ["경제","BUSINESS","대한민국 경제 기업 시장"],
+  ["금융","BUSINESS","대한민국 금융 증권 은행"],
+  ["산업","BUSINESS","대한민국 산업 제조 기업"],
+  ["IT","TECHNOLOGY","대한민국 IT 인공지능 기술"],
+  ["과학","SCIENCE","대한민국 과학 연구 우주"],
+  ["라이프","HEALTH","대한민국 라이프 건강 생활"],
+  ["문화","ENTERTAINMENT","대한민국 문화 예술 콘텐츠"]
+ ];
+ const headers={"accept":"application/rss+xml, application/xml, text/xml, */*","user-agent":"Mozilla/5.0 (compatible; AIdaily2/1.0; +https://news.google.com/)"};
+ const all=await Promise.all(feeds.map(async([category,topic,query])=>{
+  const urls=[
+   "https://news.google.com/rss/headlines/section/topic/"+topic+"?hl=ko&gl=KR&ceid=KR:ko",
+   "https://news.google.com/rss/search?q="+encodeURIComponent(query)+"&hl=ko&gl=KR&ceid=KR:ko"
+  ];
+  const errors:string[]=[];
+  for(const feedUrl of urls){
+   try{
+    const res=await fetch(feedUrl,{headers,signal:AbortSignal.timeout(12000),redirect:"follow"});
+    if(!res.ok){errors.push("HTTP "+res.status);continue;}
+    const xml=await res.text();
+    const parsed=parseRss(xml,category);
+    if(parsed.length)return parsed;
+    errors.push("피드 항목 없음");
+   }catch(error){errors.push(safeText((error as Error).message,120));}
+  }
+  console.warn("Google News RSS unavailable",category,errors);
+  return [];
  }));
- const seen=new Set<string>();return all.flat().filter(item=>{if(seen.has(item.url))return false;seen.add(item.url);return true}).sort((a,b)=>b.publishedAt.localeCompare(a.publishedAt));
+ const seen=new Set<string>();
+ const items=all.flat().filter(item=>{if(seen.has(item.url))return false;seen.add(item.url);return true}).sort((a,b)=>b.publishedAt.localeCompare(a.publishedAt));
+ if(!items.length)throw new Error("뉴스 제공처에 연결하지 못했습니다. 잠시 후 새로고침해 주세요.");
+ return items;
 }
 async function gemini(env:Env,prompt:string){
  if(!env.GEMINI_API_KEY)throw new Error("GEMINI_API_KEY Worker secret이 등록되지 않았습니다.");
