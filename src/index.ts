@@ -118,22 +118,28 @@ function parseDailyJson(raw: string) {
 }
 async function createDaily(env: Env,user: any,type: DailyType,preferences: string) {
  const date=new Intl.DateTimeFormat("en-CA",{timeZone:env.APP_TIMEZONE || "Asia/Seoul",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
- const old=await env.DB.prepare("SELECT * FROM daily_contents WHERE owner_key=? AND content_type=? AND content_date=?").bind(user.id,type,date).first<any>();
- if(old) return {item:{...old,content:JSON.parse(old.content_json)},reused:true};
- const profile=await env.DB.prepare("SELECT * FROM user_profiles WHERE user_id=?").bind(user.id).first<any>();
- const prompt="한국어 데일리 매거진 에디터로서 "+date+" 콘텐츠 작성. "+DAILY_PROMPTS[type]+"\n사용자 선호: "+safeText(preferences,1200)+"\n프로필: "+JSON.stringify(profile || {})+"\nJSON 객체만 반환.";
- const content=parseDailyJson(await gemini(env,prompt));
- if(type==="quiz" && !["O","X"].includes(content.answer)) throw new Error("퀴즈 정답 형식 오류");
- const contentId=id(),stamp=now(),title=safeText(content.title,180)||DAILY_LABELS[type],summary=safeText(content.summary,600);
- try {
-  await env.DB.prepare("INSERT INTO daily_contents(id,owner_key,content_type,content_date,title,summary,content_json,created_at) VALUES(?,?,?,?,?,?,?,?)").bind(contentId,user.id,type,date,title,summary,JSON.stringify(content),stamp).run();
- } catch (error) {
-  const concurrent=await env.DB.prepare("SELECT * FROM daily_contents WHERE owner_key=? AND content_type=? AND content_date=?").bind(user.id,type,date).first<any>();
-  if(concurrent)return {item:{...concurrent,content:JSON.parse(concurrent.content_json)},reused:true};
-  throw error;
+ const cached=async()=>env.DB.prepare("SELECT * FROM daily_contents WHERE owner_key=? AND content_type=? AND content_date=?").bind(user.id,type,date).first<any>();
+ const old=await cached();
+ if(old)return {item:{...old,content:JSON.parse(old.content_json)},reused:true};
+ const lockKey=user.id+":"+type+":"+date,stamp=now(),staleBefore=new Date(Date.now()-15*60*1000).toISOString();
+ const lock=await env.DB.prepare("INSERT INTO daily_generation_locks(lock_key,created_at) VALUES(?,?) ON CONFLICT(lock_key) DO UPDATE SET created_at=excluded.created_at WHERE daily_generation_locks.created_at<?").bind(lockKey,stamp,staleBefore).run();
+ if(!lock.meta.changes){
+  const afterWait=await cached();
+  if(afterWait)return {item:{...afterWait,content:JSON.parse(afterWait.content_json)},reused:true};
+  throw new Error("같은 콘텐츠를 생성하고 있습니다. 잠시 후 다시 확인해 주세요.");
  }
- await env.DB.prepare("INSERT INTO generation_runs(id,action,status,detail,created_at) VALUES(?,?,?,?,?)").bind(id(),"daily-"+type,"success",user.id+":"+date,stamp).run();
- return {item:{id:contentId,owner_key:user.id,content_type:type,content_date:date,title,summary,content_json:JSON.stringify(content),content,created_at:stamp},reused:false};
+ try {
+  const profile=await env.DB.prepare("SELECT * FROM user_profiles WHERE user_id=?").bind(user.id).first<any>();
+  const prompt="한국어 데일리 매거진 에디터로서 "+date+" 콘텐츠 작성. "+DAILY_PROMPTS[type]+"\n사용자 선호: "+safeText(preferences,1200)+"\n프로필: "+JSON.stringify(profile || {})+"\nJSON 객체만 반환.";
+  const content=parseDailyJson(await gemini(env,prompt));
+  if(type==="quiz" && !["O","X"].includes(content.answer))throw new Error("퀴즈 정답 형식 오류");
+  const contentId=id(),title=safeText(content.title,180)||DAILY_LABELS[type],summary=safeText(content.summary,600),contentJson=JSON.stringify(content);
+  await env.DB.prepare("INSERT INTO daily_contents(id,owner_key,content_type,content_date,title,summary,content_json,created_at) VALUES(?,?,?,?,?,?,?,?)").bind(contentId,user.id,type,date,title,summary,contentJson,stamp).run();
+  await env.DB.prepare("INSERT INTO generation_runs(id,action,status,detail,created_at) VALUES(?,?,?,?,?)").bind(id(),"daily-"+type,"success",user.id+":"+date,stamp).run();
+  return {item:{id:contentId,owner_key:user.id,content_type:type,content_date:date,title,summary,content_json:contentJson,content,created_at:stamp},reused:false};
+ } finally {
+  await env.DB.prepare("DELETE FROM daily_generation_locks WHERE lock_key=?").bind(lockKey).run();
+ }
 }
 
 async function publishDue(env:Env){
