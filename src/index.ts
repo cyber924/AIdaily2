@@ -43,13 +43,57 @@ function parseRss(xml:string,category:string){
  return out;
 }
 async function collectNews(){
- const feeds:[string,string][]=[["시사","NATION"],["정치","NATION"],["사회","NATION"],["경제","BUSINESS"],["금융","BUSINESS"],["산업","BUSINESS"],["IT","TECHNOLOGY"],["과학","SCIENCE"],["라이프","HEALTH"],["문화","ENTERTAINMENT"]];
- const all=await Promise.all(feeds.map(async([category,topic])=>{
-  const res=await fetch("https://news.google.com/rss/headlines/section/topic/"+topic+"?hl=ko&gl=KR&ceid=KR:ko",{headers:{"user-agent":"AIdaily2/1.0"},signal:AbortSignal.timeout(12000)});
-  if(!res.ok)throw new Error("Google 뉴스 피드 오류: "+category);
-  return parseRss(await res.text(),category);
+ const feeds:[string,string,string][]=[
+  ["시사","NATION","대한민국 주요 뉴스"],
+  ["정치","NATION","대한민국 정치 국회 정부"],
+  ["사회","NATION","대한민국 사회 사건 생활"],
+  ["경제","BUSINESS","대한민국 경제 기업 시장"],
+  ["금융","BUSINESS","대한민국 금융 증권 은행"],
+  ["산업","BUSINESS","대한민국 산업 제조 기업"],
+  ["IT","TECHNOLOGY","대한민국 IT 인공지능 기술"],
+  ["과학","SCIENCE","대한민국 과학 연구 우주"],
+  ["라이프","HEALTH","대한민국 라이프 건강 생활"],
+  ["문화","ENTERTAINMENT","대한민국 문화 예술 콘텐츠"]
+ ];
+ const headers={"accept":"application/rss+xml, application/xml, text/xml, */*","user-agent":"Mozilla/5.0 (compatible; AIdaily2/1.0)"};
+ const all=await Promise.all(feeds.map(async([category,topic,query])=>{
+  const urls=[
+   "https://news.google.com/rss/headlines/section/topic/"+topic+"?hl=ko&gl=KR&ceid=KR:ko",
+   "https://news.google.com/rss/search?q="+encodeURIComponent(query)+"&hl=ko&gl=KR&ceid=KR:ko"
+  ];
+  for(const feedUrl of urls){
+   try{
+    const res=await fetch(feedUrl,{headers,signal:AbortSignal.timeout(10000),redirect:"follow"});
+    if(!res.ok)continue;
+    const parsed=parseRss(await res.text(),category);
+    if(parsed.length)return parsed;
+   }catch(error){console.warn("Google News RSS fallback",category,safeText((error as Error).message,100));}
+  }
+  // Google RSS may be unavailable from some edge locations. Use GDELT's public news index as a secondary source.
+  try{
+   const endpoint=new URL("https://api.gdeltproject.org/api/v2/doc/doc");
+   endpoint.searchParams.set("query",query+" sourcelang:korean");
+   endpoint.searchParams.set("mode","ArtList");endpoint.searchParams.set("format","json");
+   endpoint.searchParams.set("maxrecords","12");endpoint.searchParams.set("sort","DateDesc");
+   const response=await fetch(endpoint.toString(),{headers:{"accept":"application/json","user-agent":"AIdaily2/1.0"},signal:AbortSignal.timeout(10000)});
+   if(response.ok){
+    const data:any=await response.json();
+    const rows=Array.isArray(data.articles)?data.articles:[];
+    const parsed=rows.map((row:any)=>{
+     const raw=String(row.seendate||"");
+     const match=raw.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z?$/);
+     const publishedAt=match?new Date(match[1]+"-"+match[2]+"-"+match[3]+"T"+match[4]+":"+match[5]+":"+match[6]+"Z"):new Date(raw);
+     return {title:safeText(row.title,500),url:safeText(row.url,2000),publishedAt:publishedAt.toISOString(),category};
+    }).filter((row:any)=>row.title&&/^https?:\/\//i.test(row.url)&&!isNaN(new Date(row.publishedAt).getTime()));
+    if(parsed.length)return parsed;
+   }
+  }catch(error){console.warn("GDELT news fallback",category,safeText((error as Error).message,100));}
+  return [];
  }));
- const seen=new Set<string>();return all.flat().filter(item=>{if(seen.has(item.url))return false;seen.add(item.url);return true}).sort((a,b)=>b.publishedAt.localeCompare(a.publishedAt));
+ const seen=new Set<string>();
+ const items=all.flat().filter(item=>{if(seen.has(item.url))return false;seen.add(item.url);return true}).sort((a,b)=>b.publishedAt.localeCompare(a.publishedAt));
+ if(!items.length)throw new Error("뉴스 제공처(Google News·GDELT)에 연결하지 못했습니다. 잠시 후 새로고침해 주세요.");
+ return items;
 }
 async function gemini(env:Env,prompt:string){
  if(!env.GEMINI_API_KEY)throw new Error("GEMINI_API_KEY Worker secret이 등록되지 않았습니다.");

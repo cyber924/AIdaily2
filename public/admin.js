@@ -116,7 +116,31 @@ $("#claimAdmin")?.addEventListener("click",async()=>{const b=$("#claimAdmin");b.
 $("#adminRefresh")?.addEventListener("click",loadAdminDashboard);
 $("#adminContentType")?.addEventListener("change",loadAdminContent);
 $("#adminCreate")?.addEventListener("click",()=>editAdminContent($("#adminContentType").value==="daily"?"daily":"article",null));
-window.addEventListener("hashchange",()=>{if($("#adminPanel"))$("#adminPanel").hidden=location.hash!=="#adminPanel"||!adminReady});
+async function openAdminPanel(){
+ const panel=$("#adminPanel"),nav=$("#adminNav"),bootstrap=$("#adminBootstrap");
+ if(!panel)return;
+ try{
+  const st=await api("/api/admin/status");
+  if(!st.authenticated){openAuth("login");toast("관리자 메뉴는 로그인 후 이용할 수 있습니다.");return;}
+  if(!st.adminExists){
+   panel.hidden=false;bootstrap.hidden=false;
+   if(nav){nav.hidden=false;nav.textContent="관리자 등록";nav.href="#adminPanel";}
+   return;
+  }
+  if(!st.isAdmin){panel.hidden=true;toast("관리자 권한이 없습니다.");return;}
+  panel.hidden=false;bootstrap.hidden=true;adminReady=true;
+  await loadAdminDashboard();
+ }catch(error){toast("관리자 화면을 열지 못했습니다: "+error.message)}
+}
+$("#adminNav")?.addEventListener("click",async event=>{
+ event.preventDefault();
+ if(location.hash!=="#adminPanel")history.pushState(null,"","#adminPanel");
+ await openAdminPanel();
+});
+window.addEventListener("hashchange",()=>{
+ if(location.hash==="#adminPanel")openAdminPanel();
+ else if($("#adminPanel"))$("#adminPanel").hidden=true;
+});
 document.addEventListener("DOMContentLoaded",()=>{openDetailRoute();refreshAdminStatus()});
 const authRefreshObserver=new MutationObserver(()=>{if(typeof authUser!=="undefined"&&authUser)refreshAdminStatus()});
 if($("#accountLabel"))authRefreshObserver.observe($("#accountLabel"),{childList:true,subtree:true,characterData:true});
