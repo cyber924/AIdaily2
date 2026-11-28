@@ -172,6 +172,43 @@ async function handle(request:Request,env:Env){
   return new Response(JSON.stringify({ok:true}),{headers:{"content-type":"application/json; charset=utf-8","cache-control":"no-store","Set-Cookie":"aidaily_session=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0"}});
  }
  if(path==="/api/health")return json({ok:true,service:"AIdaily2",database:"D1",aiConfigured:!!env.GEMINI_API_KEY,model:env.GEMINI_MODEL||"gemini-3.8-flash",login:"email-password"});
+
+ if(path==="/api/profile"&&request.method==="GET"){
+  const user=await requireUser(request,env);if(!user)return json({error:"로그인이 필요합니다."},401);
+  const p=await env.DB.prepare("SELECT preferences_json,location,zodiac_sign,chinese_zodiac_sign,mbti_type,updated_at FROM user_profiles WHERE user_id=?").bind(user.id).first<any>();
+  return json(p||{preferences_json:"{}",location:"Seoul",zodiac_sign:"",chinese_zodiac_sign:"",mbti_type:""});
+ }
+ if(path==="/api/profile"&&request.method==="PUT"){
+  const user=await requireUser(request,env);if(!user)return json({error:"로그인이 필요합니다."},401);
+  const b:any=await request.json(),stamp=now(),prefs=JSON.stringify(typeof b.preferences==="object"&&b.preferences?b.preferences:{});
+  await env.DB.prepare("INSERT INTO user_profiles(user_id,preferences_json,location,zodiac_sign,chinese_zodiac_sign,mbti_type,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET preferences_json=excluded.preferences_json,location=excluded.location,zodiac_sign=excluded.zodiac_sign,chinese_zodiac_sign=excluded.chinese_zodiac_sign,mbti_type=excluded.mbti_type,updated_at=excluded.updated_at")
+   .bind(user.id,prefs,safeText(b.location,80)||"Seoul",safeText(b.zodiac_sign,40),safeText(b.chinese_zodiac_sign,40),safeText(b.mbti_type,8),stamp).run();
+  return json({ok:true});
+ }
+ if(path==="/api/daily"&&request.method==="GET"){
+  const user=await requireUser(request,env);if(!user)return json({error:"로그인이 필요합니다."},401);
+  const type=safeText(url.searchParams.get("type"),30);
+  if(type&&!DAILY_TYPES.includes(type as DailyType))return json({error:"지원하지 않는 콘텐츠 유형입니다."},400);
+  const rows=type?await env.DB.prepare("SELECT * FROM daily_contents WHERE owner_key=? AND content_type=? ORDER BY content_date DESC LIMIT 7").bind(user.id,type).all<any>():await env.DB.prepare("SELECT * FROM daily_contents WHERE owner_key=? ORDER BY content_date DESC LIMIT 40").bind(user.id).all<any>();
+  return json((rows.results||[]).map((x:any)=>({...x,content:JSON.parse(x.content_json)})));
+ }
+ if(path==="/api/daily"&&request.method==="POST"){
+  const user=await requireUser(request,env);if(!user)return json({error:"로그인이 필요합니다."},401);
+  const b:any=await request.json(),type=safeText(b.type,30) as DailyType;
+  if(!DAILY_TYPES.includes(type))return json({error:"지원하지 않는 콘텐츠 유형입니다."},400);
+  const result=await createDaily(env,user,type,safeText(b.preferences,1200));
+  return json({ok:true,reused:result.reused,item:result.item});
+ }
+ if(path==="/api/quiz/answer"&&request.method==="POST"){
+  const user=await requireUser(request,env);if(!user)return json({error:"로그인이 필요합니다."},401);
+  const b:any=await request.json(),answer=safeText(b.answer,1),contentId=safeText(b.contentId,80);
+  if(!["O","X"].includes(answer))return json({error:"O 또는 X를 선택하세요."},400);
+  const quiz=await env.DB.prepare("SELECT content_json FROM daily_contents WHERE id=? AND owner_key=? AND content_type='quiz'").bind(contentId,user.id).first<any>();
+  if(!quiz)return json({error:"퀴즈를 찾을 수 없습니다."},404);
+  const parsed=JSON.parse(quiz.content_json),correct=parsed.answer===answer;
+  await env.DB.prepare("INSERT INTO quiz_attempts(id,user_id,content_id,user_answer,is_correct,attempted_at) VALUES(?,?,?,?,?,?)").bind(id(),user.id,contentId,answer,correct?1:0,now()).run();
+  return json({ok:true,correct,explanation:parsed.explanation});
+ }
  if(path==="/api/articles"&&request.method==="GET"){
   const category=url.searchParams.get("category");const status=url.searchParams.get("status")||"published";if(status!=="published"&&!await requireUser(request,env))return json({error:"로그인이 필요합니다."},401);const limit=Math.min(100,Math.max(1,Number(url.searchParams.get("limit")||30)));
   const result=category?await env.DB.prepare("SELECT * FROM articles WHERE status=? AND category=? ORDER BY published_at DESC LIMIT ?").bind(status,category,limit).all():await env.DB.prepare("SELECT * FROM articles WHERE status=? ORDER BY published_at DESC LIMIT ?").bind(status,limit).all();
