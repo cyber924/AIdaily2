@@ -75,7 +75,7 @@
   function renderTopic(topicKey) {
     const topic = topics[topicKey];
     if (!topic) return false;
-    const selectedSub = params.get("sub") || "";
+    const selectedSub = params.get("sub") || "";\n    const subPage = topic.sub[Number(selectedSub)] || null;
     root.hidden = false;
     if (main) main.hidden = true;
     const nav = document.querySelector(".top nav");
@@ -93,7 +93,7 @@
         <div class="topic-hero-art"><div class="topic-art-ring"></div><div class="topic-art-core">${esc(topic.icon)}</div><span>${esc(topic.label)}</span></div>
       </section>
       <section class="topic-subnav"><div><span class="topic-section-kicker">EXPLORE</span><h2>${esc(topic.label)} 둘러보기</h2></div><div class="topic-subnav-list">${topic.sub.map((s,i)=>'<a class="topic-subnav-item '+(selectedSub===String(i)?"active":"")+'" href="/?topic='+topicKey+'&sub='+i+'"><b>'+esc(s[0])+'</b><small>'+esc(s[1])+'</small></a>').join("")}</div></section>
-      <section class="topic-features"><div class="topic-section-heading"><div><span class="topic-section-kicker">CURATED FOR YOU</span><h2>오늘의 ${esc(topic.label)} 가이드</h2></div><button class="topic-generate" id="topicGenerate">✦ 오늘 콘텐츠 생성</button></div><div class="topic-feature-grid">${topic.features.map(f=>'<article class="topic-feature"><span>'+f[0]+'</span><h3>'+esc(f[1])+'</h3><p>'+esc(f[2])+'</p></article>').join("")}</div></section>
+      <section class="topic-subpage-focus" aria-label="선택한 세부 서비스"><div><span class="topic-section-kicker">TOPIC GUIDE</span><h2>${subPage ? esc(subPage[0]) : "오늘의 "+esc(topic.label)+" 큐레이션"}</h2><p>${subPage ? esc(subPage[1])+"에 맞춘 콘텐츠와 실천 아이디어를 확인하세요." : esc(topic.intro)}</p></div><span class="topic-subpage-index">${subPage ? "0"+(Number(selectedSub)+1) : "DAILY"}</span></section>\n      <section class="topic-features"><div class="topic-section-heading"><div><span class="topic-section-kicker">CURATED FOR YOU</span><h2>${subPage ? esc(subPage[0])+" 가이드" : "오늘의 "+esc(topic.label)+" 가이드"}</h2></div><button class="topic-generate" id="topicGenerate">✦ 오늘 콘텐츠 생성</button></div><div class="topic-feature-grid">${topic.features.map(f=>'<article class="topic-feature"><span>'+f[0]+'</span><h3>'+esc(f[1])+'</h3><p>'+esc(f[2])+'</p></article>').join("")}</div></section>
       <section class="topic-library"><div class="topic-section-heading"><div><span class="topic-section-kicker">YOUR DAILY LIBRARY</span><h2>나의 ${esc(topic.label)} 콘텐츠</h2><p>오늘 생성한 콘텐츠와 지난 기록을 이곳에서 이어서 볼 수 있습니다.</p></div><a class="topic-all-link" href="/#daily-life">전체 라이프 보기 ↗</a></div><div id="topicContentList" class="topic-content-grid"><div class="empty">콘텐츠를 불러오는 중입니다…</div></div></section>
       <section class="topic-bottom"><div><span class="topic-section-kicker">A BETTER DAY STARTS HERE</span><h2>매일 조금 더 나은 하루를<br>만들어 보세요.</h2></div><a href="/" class="topic-home-cta">AIdaily 전체 둘러보기 ↗</a></section>`;
     root.querySelector("#topicGenerate").addEventListener("click", async () => {
