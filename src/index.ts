@@ -116,6 +116,29 @@ function parseDailyJson(raw: string) {
  if(start<0||end<start) throw new Error("AI 응답을 JSON으로 해석할 수 없습니다.");
  return JSON.parse(raw.slice(start,end+1));
 }
+
+async function fetchWeatherBriefing(location:string,date:string){
+ const geoUrl=new URL("https://geocoding-api.open-meteo.com/v1/search");
+ geoUrl.searchParams.set("name",location||"Seoul");geoUrl.searchParams.set("count","1");geoUrl.searchParams.set("language","ko");geoUrl.searchParams.set("format","json");
+ const geoResponse=await fetch(geoUrl.toString(),{signal:AbortSignal.timeout(10000)});
+ if(!geoResponse.ok)throw new Error("날씨 위치 검색에 실패했습니다.");
+ const geo:any=await geoResponse.json(),place=geo.results&&geo.results[0];
+ if(!place)throw new Error("지역을 찾지 못했습니다. 프로필에 영문 도시명을 입력해 주세요.");
+ const weatherUrl=new URL("https://api.open-meteo.com/v1/forecast");
+ weatherUrl.searchParams.set("latitude",String(place.latitude));weatherUrl.searchParams.set("longitude",String(place.longitude));
+ weatherUrl.searchParams.set("daily","weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max");
+ weatherUrl.searchParams.set("timezone",envTimeZoneForWeather());weatherUrl.searchParams.set("forecast_days","1");
+ const weatherResponse=await fetch(weatherUrl.toString(),{signal:AbortSignal.timeout(10000)});
+ if(!weatherResponse.ok)throw new Error("실시간 날씨 정보를 불러오지 못했습니다.");
+ const data:any=await weatherResponse.json(),daily=data.daily||{},code=Number(daily.weather_code?.[0]);
+ const labels:Record<number,string>={0:"맑음",1:"대체로 맑음",2:"부분적으로 흐림",3:"흐림",45:"안개",48:"짙은 안개",51:"약한 이슬비",53:"이슬비",55:"강한 이슬비",61:"약한 비",63:"비",65:"강한 비",71:"약한 눈",73:"눈",75:"강한 눈",80:"소나기",81:"강한 소나기",82:"매우 강한 소나기",95:"뇌우",96:"우박 동반 뇌우",99:"강한 우박 동반 뇌우"};
+ const min=daily.temperature_2m_min?.[0],max=daily.temperature_2m_max?.[0],rain=daily.precipitation_probability_max?.[0];
+ const condition=labels[code]||"변화 가능 날씨";
+ const advice=Number(rain)>=50?"우산을 챙기고 방수 신발을 고려하세요.":Number(min)<=5?"아침과 밤에는 보온에 신경 쓰세요.":Number(max)>=28?"수분을 충분히 섭취하고 한낮 야외활동을 줄이세요.":"가벼운 겉옷을 준비하면 좋습니다.";
+ return {title:place.name+" 오늘의 날씨",summary:date+" 기준 "+condition+" · 최저 "+min+"°C / 최고 "+max+"°C",condition,temperature:{minC:min,maxC:max},precipitationProbability:rain,advice,source:"Open-Meteo",sourceUrl:"https://open-meteo.com/",location:place.name};
+}
+function envTimeZoneForWeather(){return "Asia/Seoul";}
+
 async function createDaily(env: Env,user: any,type: DailyType,preferences: string) {
  const date=new Intl.DateTimeFormat("en-CA",{timeZone:env.APP_TIMEZONE || "Asia/Seoul",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
  const cached=async()=>env.DB.prepare("SELECT * FROM daily_contents WHERE owner_key=? AND content_type=? AND content_date=?").bind(user.id,type,date).first<any>();
@@ -131,7 +154,7 @@ async function createDaily(env: Env,user: any,type: DailyType,preferences: strin
  try {
   const profile=await env.DB.prepare("SELECT * FROM user_profiles WHERE user_id=?").bind(user.id).first<any>();
   const prompt="한국어 데일리 매거진 에디터로서 "+date+" 콘텐츠 작성. "+DAILY_PROMPTS[type]+"\n사용자 선호: "+safeText(preferences,1200)+"\n프로필: "+JSON.stringify(profile || {})+"\nJSON 객체만 반환.";
-  const content=parseDailyJson(await gemini(env,prompt));
+  const content=type==="weather"?await fetchWeatherBriefing(safeText(profile?.location,80)||"Seoul",date):parseDailyJson(await gemini(env,prompt));
   if(type==="quiz" && !["O","X"].includes(content.answer))throw new Error("퀴즈 정답 형식 오류");
   const contentId=id(),title=safeText(content.title,180)||DAILY_LABELS[type],summary=safeText(content.summary,600),contentJson=JSON.stringify(content);
   await env.DB.prepare("INSERT INTO daily_contents(id,owner_key,content_type,content_date,title,summary,content_json,created_at) VALUES(?,?,?,?,?,?,?,?)").bind(contentId,user.id,type,date,title,summary,contentJson,stamp).run();
