@@ -125,7 +125,13 @@ async function createDaily(env: Env,user: any,type: DailyType,preferences: strin
  const content=parseDailyJson(await gemini(env,prompt));
  if(type==="quiz" && !["O","X"].includes(content.answer)) throw new Error("퀴즈 정답 형식 오류");
  const contentId=id(),stamp=now(),title=safeText(content.title,180)||DAILY_LABELS[type],summary=safeText(content.summary,600);
- await env.DB.prepare("INSERT INTO daily_contents(id,owner_key,content_type,content_date,title,summary,content_json,created_at) VALUES(?,?,?,?,?,?,?,?)").bind(contentId,user.id,type,date,title,summary,JSON.stringify(content),stamp).run();
+ try {
+  await env.DB.prepare("INSERT INTO daily_contents(id,owner_key,content_type,content_date,title,summary,content_json,created_at) VALUES(?,?,?,?,?,?,?,?)").bind(contentId,user.id,type,date,title,summary,JSON.stringify(content),stamp).run();
+ } catch (error) {
+  const concurrent=await env.DB.prepare("SELECT * FROM daily_contents WHERE owner_key=? AND content_type=? AND content_date=?").bind(user.id,type,date).first<any>();
+  if(concurrent)return {item:{...concurrent,content:JSON.parse(concurrent.content_json)},reused:true};
+  throw error;
+ }
  await env.DB.prepare("INSERT INTO generation_runs(id,action,status,detail,created_at) VALUES(?,?,?,?,?)").bind(id(),"daily-"+type,"success",user.id+":"+date,stamp).run();
  return {item:{id:contentId,owner_key:user.id,content_type:type,content_date:date,title,summary,content_json:JSON.stringify(content),content,created_at:stamp},reused:false};
 }
