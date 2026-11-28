@@ -267,7 +267,7 @@ async function handle(request:Request,env:Env){
   if(path.startsWith("/api/admin/daily/")&&request.method==="PUT"){
    const b:any=await request.json(),content=typeof b.content==="string"?JSON.parse(b.content):b.content;
    if(!content||typeof content!=="object")return json({error:"콘텐츠 JSON 형식이 올바르지 않습니다."},400);
-   const stamp=now(),title=safeText(b.title||content.title,180),summary=safeText(b.summary||content.summary,600);
+   const title=safeText(b.title||content.title,180),summary=safeText(b.summary||content.summary,600);
    await env.DB.prepare("UPDATE daily_contents SET title=?,summary=?,content_json=? WHERE id=?").bind(title,summary,JSON.stringify({...content,title,summary}),path.split("/").pop()).run();
    return json({ok:true});
   }
