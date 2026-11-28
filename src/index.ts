@@ -213,11 +213,13 @@ async function handle(request:Request,env:Env){
 
  if(path==="/api/admin/status"&&request.method==="GET"){
   const user=await requireUser(request,env);if(!user)return json({authenticated:false,adminExists:false,isAdmin:false});
+  await env.DB.prepare("CREATE TABLE IF NOT EXISTS admin_users (user_id TEXT PRIMARY KEY,created_at TEXT NOT NULL,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE)").run();
   const count=await env.DB.prepare("SELECT COUNT(*) AS count FROM admin_users").first<any>();
   return json({authenticated:true,adminExists:Number(count?.count||0)>0,isAdmin:await isAdmin(user,env),email:user.email});
  }
  if(path==="/api/admin/bootstrap"&&request.method==="POST"){
   const user=await requireUser(request,env);if(!user)return json({error:"로그인이 필요합니다."},401);
+  await env.DB.prepare("CREATE TABLE IF NOT EXISTS admin_users (user_id TEXT PRIMARY KEY,created_at TEXT NOT NULL,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE)").run();
   const result=await env.DB.prepare("INSERT INTO admin_users(user_id,created_at) SELECT ?,? WHERE NOT EXISTS(SELECT 1 FROM admin_users)").bind(user.id,now()).run();
   if(!result.meta.changes&&!await isAdmin(user,env))return json({error:"최초 관리자 계정이 이미 등록되어 있습니다."},409);
   return json({ok:true,isAdmin:true});
