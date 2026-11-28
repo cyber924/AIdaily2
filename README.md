@@ -12,9 +12,7 @@ Cloudflare Workers + D1 기반 한국어 AI 데일리 브리핑 플랫폼입니�
 
 ## Cloudflare 배포
 1. Cloudflare D1 데이터베이스 `aidaily2-db`가 `wrangler.toml`의 ID와 일치하는지 확인합니다.
-2. 기존 데이터는 삭제하지 말고 순서대로 마이그레이션을 적용합니다.
-   - `npx wrangler d1 migrations apply aidaily2-db --remote`
-   - migrations 폴더의 0001, 0002, 0003이 적용되는지 확인합니다.
+2. 기존 운영 DB의 마이그레이션 이력을 먼저 확인합니다. 0001/0002를 D1 Console에서 수동 실행한 기존 DB라면 전체 migration을 다시 적용하지 마세요. D1 Console에서 `migrations/0003_daily_life.sql`만 1회 실행하거나, Wrangler migration history가 정상적으로 관리되는 환경에서 미적용 migration만 적용합니다.
 3. Worker secrets:
    - `npx wrangler secret put GEMINI_API_KEY`
    - `npx wrangler secret put UNSPLASH_ACCESS_KEY` (선택)
