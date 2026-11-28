@@ -24,6 +24,10 @@ async function currentUser(request:Request,env:Env){
  return row||null;
 }
 async function requireUser(request:Request,env:Env){const user=await currentUser(request,env);return user;}
+
+async function isAdmin(user: any,env: Env){if(!user)return false;const row=await env.DB.prepare("SELECT user_id FROM admin_users WHERE user_id=?").bind(user.id).first();return !!row;}
+async function requireAdmin(request: Request,env: Env){const user=await currentUser(request,env);if(!user)return null;return await isAdmin(user,env)?user:null;}
+
 function sessionCookie(token:string,maxAge:number){return "aidaily_session="+token+"; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age="+maxAge;}
 
 const safeText=(v:unknown,max=5000)=>String(v??"").trim().slice(0,max);
@@ -206,6 +210,110 @@ async function handle(request:Request,env:Env){
   const token=cookieValue(request,"aidaily_session");if(token)await env.DB.prepare("DELETE FROM sessions WHERE token_hash=?").bind(await sha256(token)).run();
   return new Response(JSON.stringify({ok:true}),{headers:{"content-type":"application/json; charset=utf-8","cache-control":"no-store","Set-Cookie":"aidaily_session=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0"}});
  }
+
+ if(path==="/api/admin/status"&&request.method==="GET"){
+  const user=await requireUser(request,env);if(!user)return json({authenticated:false,adminExists:false,isAdmin:false});
+  await env.DB.prepare("CREATE TABLE IF NOT EXISTS admin_users (user_id TEXT PRIMARY KEY,created_at TEXT NOT NULL,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE)").run();
+  const count=await env.DB.prepare("SELECT COUNT(*) AS count FROM admin_users").first<any>();
+  return json({authenticated:true,adminExists:Number(count?.count||0)>0,isAdmin:await isAdmin(user,env),email:user.email});
+ }
+ if(path==="/api/admin/bootstrap"&&request.method==="POST"){
+  const user=await requireUser(request,env);if(!user)return json({error:"로그인이 필요합니다."},401);
+  await env.DB.prepare("CREATE TABLE IF NOT EXISTS admin_users (user_id TEXT PRIMARY KEY,created_at TEXT NOT NULL,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE)").run();
+  const result=await env.DB.prepare("INSERT INTO admin_users(user_id,created_at) SELECT ?,? WHERE NOT EXISTS(SELECT 1 FROM admin_users)").bind(user.id,now()).run();
+  if(!result.meta.changes&&!await isAdmin(user,env))return json({error:"최초 관리자 계정이 이미 등록되어 있습니다."},409);
+  return json({ok:true,isAdmin:true});
+ }
+ if(path.startsWith("/api/admin/")){
+  const admin=await requireAdmin(request,env);if(!admin)return json({error:"관리자 권한이 필요합니다."},403);
+  if(path==="/api/admin/overview"&&request.method==="GET"){
+   const [users,articles,daily,published,drafts]=await Promise.all([
+    env.DB.prepare("SELECT COUNT(*) AS n FROM users").first<any>(),
+    env.DB.prepare("SELECT COUNT(*) AS n FROM articles").first<any>(),
+    env.DB.prepare("SELECT COUNT(*) AS n FROM daily_contents").first<any>(),
+    env.DB.prepare("SELECT COUNT(*) AS n FROM articles WHERE status='published'").first<any>(),
+    env.DB.prepare("SELECT COUNT(*) AS n FROM articles WHERE status='draft'").first<any>()
+   ]);
+   return json({users:Number(users?.n||0),articles:Number(articles?.n||0),daily:Number(daily?.n||0),published:Number(published?.n||0),drafts:Number(drafts?.n||0)});
+  }
+  if(path==="/api/admin/content"&&request.method==="GET"){
+   const type=url.searchParams.get("type")||"all";
+   if(type==="daily")return json((await env.DB.prepare("SELECT id,content_type,title,summary,content_date,created_at FROM daily_contents ORDER BY content_date DESC,created_at DESC LIMIT 300").all()).results);
+   if(type==="articles")return json((await env.DB.prepare("SELECT id,title,summary,category,status,created_at,published_at FROM articles ORDER BY created_at DESC LIMIT 300").all()).results);
+   const [d,a]=await Promise.all([
+    env.DB.prepare("SELECT id,content_type AS kind,title,summary,content_date AS date,created_at FROM daily_contents ORDER BY created_at DESC LIMIT 150").all<any>(),
+    env.DB.prepare("SELECT id,'article' AS kind,title,summary,category,created_at FROM articles ORDER BY created_at DESC LIMIT 150").all<any>()
+   ]);
+   return json([...d.results,...a.results].sort((x:any,y:any)=>String(y.created_at).localeCompare(String(x.created_at))).slice(0,250));
+  }
+  if(path==="/api/admin/articles"&&request.method==="POST"){
+   const b:any=await request.json(),articleId=id(),stamp=now();
+   if(!safeText(b.title,240)||!safeText(b.content,12000))return json({error:"제목과 본문을 입력하세요."},400);
+   await env.DB.prepare("INSERT INTO articles(id,title,summary,content,category,source_title,source_url,image_url,image_alt,image_credit,status,created_at,published_at,updated_at,owner_user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+    .bind(articleId,safeText(b.title,240),safeText(b.summary,700),safeText(b.content,12000),safeText(b.category,40)||"라이프",safeText(b.source_title,300),safeText(b.source_url,2000),safeText(b.image_url,2000),safeText(b.image_alt,500),safeText(b.image_credit,500),b.status==="draft"?"draft":"published",stamp,b.status==="draft"?null:stamp,stamp,admin.id).run();
+   return json({ok:true,id:articleId});
+  }
+
+  if(path==="/api/admin/daily"&&request.method==="POST"){
+   const b:any=await request.json(),type=safeText(b.type,30) as DailyType,content=typeof b.content==="string"?JSON.parse(b.content):b.content;
+   if(!DAILY_TYPES.includes(type)||!content||typeof content!=="object")return json({error:"콘텐츠 유형 또는 JSON을 확인하세요."},400);
+   const stamp=now(),contentId=id(),date=new Intl.DateTimeFormat("en-CA",{timeZone:env.APP_TIMEZONE||"Asia/Seoul",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date()),title=safeText(b.title||content.title,180),summary=safeText(b.summary||content.summary,600);
+   await env.DB.prepare("INSERT INTO daily_contents(id,owner_key,content_type,content_date,title,summary,content_json,created_at) VALUES(?,?,?,?,?,?,?,?)").bind(contentId,admin.id,type,date,title,summary,JSON.stringify({...content,title,summary}),stamp).run();
+   return json({ok:true,id:contentId});
+  }
+  if(path.startsWith("/api/admin/daily/")&&request.method==="GET"){
+   const row=await env.DB.prepare("SELECT * FROM daily_contents WHERE id=?").bind(path.split("/").pop()).first<any>();
+   if(!row)return json({error:"콘텐츠를 찾을 수 없습니다."},404);
+   return json({...row,content:JSON.parse(row.content_json)});
+  }
+  if(path.startsWith("/api/admin/daily/")&&request.method==="PUT"){
+   const b:any=await request.json(),content=typeof b.content==="string"?JSON.parse(b.content):b.content;
+   if(!content||typeof content!=="object")return json({error:"콘텐츠 JSON 형식이 올바르지 않습니다."},400);
+   const title=safeText(b.title||content.title,180),summary=safeText(b.summary||content.summary,600);
+   await env.DB.prepare("UPDATE daily_contents SET title=?,summary=?,content_json=? WHERE id=?").bind(title,summary,JSON.stringify({...content,title,summary}),path.split("/").pop()).run();
+   return json({ok:true});
+  }
+  if(path.startsWith("/api/admin/daily/")&&request.method==="DELETE"){
+   const contentId=path.split("/").pop();
+   await env.DB.prepare("DELETE FROM daily_contents WHERE id=?").bind(contentId).run();
+   return json({ok:true});
+  }
+  if(path.startsWith("/api/admin/articles/")&&request.method==="GET"){
+   const row=await env.DB.prepare("SELECT * FROM articles WHERE id=?").bind(path.split("/").pop()).first<any>();
+   if(!row)return json({error:"브리핑을 찾을 수 없습니다."},404);
+   return json(row);
+  }
+  if(path.startsWith("/api/admin/articles/")&&request.method==="PUT"){
+   const b:any=await request.json(),stamp=now();
+   await env.DB.prepare("UPDATE articles SET title=?,summary=?,content=?,category=?,image_url=?,source_url=?,status=?,published_at=CASE WHEN ?='published' AND published_at IS NULL THEN ? WHEN ?='draft' THEN NULL ELSE published_at END,updated_at=? WHERE id=?")
+    .bind(safeText(b.title,240),safeText(b.summary,700),safeText(b.content,12000),safeText(b.category,40)||"라이프",safeText(b.image_url,2000),safeText(b.source_url,2000),b.status==="draft"?"draft":"published",b.status==="draft"?"draft":"published",stamp,b.status==="draft"?"draft":"published",stamp,path.split("/").pop()).run();
+   return json({ok:true});
+  }
+  if(path.startsWith("/api/admin/articles/")&&request.method==="DELETE"){
+   await env.DB.prepare("DELETE FROM articles WHERE id=?").bind(path.split("/").pop()).run();
+   return json({ok:true});
+  }
+ }
+ if(path==="/api/daily/bulk"&&request.method==="POST"){
+  const user=await requireUser(request,env);if(!user)return json({error:"로그인이 필요합니다."},401);
+  const b:any=await request.json(),types:DailyType[]=Array.isArray(b.types)?Array.from(new Set(b.types as DailyType[])).slice(0,9):[];
+  if(!types.length||types.some((t:any)=>!DAILY_TYPES.includes(t)))return json({error:"생성할 콘텐츠 분야를 선택하세요."},400);
+  const results=[];
+  for(const type of types){try{const result=await createDaily(env,user,type,safeText(b.preferences,1200));results.push({type,ok:true,reused:result.reused,item:result.item});}catch(e){results.push({type,ok:false,error:safeText((e as Error).message,500)});}}
+  return json({ok:true,results});
+ }
+ if(path.startsWith("/api/daily/")&&request.method==="GET"){
+  const user=await requireUser(request,env);if(!user)return json({error:"로그인이 필요합니다."},401);
+  const row=await env.DB.prepare("SELECT * FROM daily_contents WHERE id=? AND owner_key=?").bind(path.split("/").pop(),user.id).first<any>();
+  if(!row)return json({error:"콘텐츠를 찾을 수 없습니다."},404);
+  return json({...row,content:JSON.parse(row.content_json)});
+ }
+ if(path.startsWith("/api/articles/")&&request.method==="GET"){
+  const row=await env.DB.prepare("SELECT * FROM articles WHERE id=? AND status='published'").bind(path.split("/").pop()).first<any>();
+  if(!row)return json({error:"브리핑을 찾을 수 없습니다."},404);
+  return json(row);
+ }
+
  if(path==="/api/health")return json({ok:true,service:"AIdaily2",database:"D1",aiConfigured:!!env.GEMINI_API_KEY,model:env.GEMINI_MODEL||"gemini-3.8-flash",login:"email-password"});
 
  if(path==="/api/profile"&&request.method==="GET"){

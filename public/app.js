@@ -17,3 +17,31 @@ document.querySelectorAll("[data-auth-close]").forEach(x=>x.addEventListener("cl
 $("#authForm").onsubmit=async e=>{e.preventDefault();const button=$("#authSubmit");button.disabled=true;button.textContent="처리 중…";$("#authError").textContent="";try{const payload={email:$("#authEmail").value.trim(),password:$("#authPassword").value};if(authMode==="register")payload.displayName=$("#authName").value.trim();const mode=authMode;await api(mode==="register"?"/api/auth/register":"/api/auth/login",{method:"POST",body:JSON.stringify(payload)});$("#authPassword").value="";closeAuth();await refreshAuth();toast(mode==="register"?"회원가입 및 로그인 완료":"로그인했습니다.")}catch(err){$("#authError").textContent=err.message}finally{button.disabled=false;button.textContent=authMode==="register"?"이메일로 가입하고 시작":"이메일로 로그인"}};
 
 renderDailyGrid();renderChips();loadArticles();loadFeed();refreshAuth();document.addEventListener("visibilitychange",()=>{if(!document.hidden&&authUser){runDue();loadQueue()}});window.addEventListener("focus",()=>{if(authUser){runDue();loadQueue()}});
+// AIdaily2 bulk generation and editorial detail enhancements
+function installDailySelection(){
+ const grid=$("#dailyGrid");if(!grid)return;
+ grid.innerHTML=dailyTypes.map(x=>'<article class="daily-tile selectable-tile"><input class="daily-check" type="checkbox" value="'+x[0]+'"><span class="daily-icon">'+x[3]+'</span><span class="daily-tile-copy"><b>'+x[1]+'</b><small>'+x[2]+'</small></span><button type="button" data-daily="'+x[0]+'">개별 생성 ↗</button></article>').join("");
+}
+function selectedDailyTypes(){return [...document.querySelectorAll(".daily-check:checked")].map(x=>x.value)}
+function updateDailySelection(){const n=selectedDailyTypes().length;$("#dailySelectedCount").textContent=n+"개 선택";$("#generateSelectedDaily").disabled=!n}
+async function generateDailyBatch(types){
+ if(!authUser){openAuth("login");toast("로그인 후 이용할 수 있습니다.");return}
+ const buttons=[$("#generateSelectedDaily"),$("#generateAllDaily")];buttons.forEach(b=>{b.disabled=true});
+ const selected=new Set(types);document.querySelectorAll(".daily-check").forEach(c=>{c.disabled=selected.has(c.value)});
+ const original=$("#generateSelectedDaily").textContent;$("#generateSelectedDaily").textContent="생성 중…";
+ try{
+  const result=await api("/api/daily/bulk",{method:"POST",body:JSON.stringify({types,preferences:$("#dailyPreferences").value})});
+  const successes=(result.results||[]).filter(x=>x.ok);
+  const failures=(result.results||[]).filter(x=>!x.ok);
+  await loadDaily();
+  toast(successes.length+"개 콘텐츠 생성 완료"+(failures.length?" · "+failures.length+"개 실패":""));
+  if(failures.length)console.warn("일괄 생성 실패",failures);
+ }catch(e){toast(e.message)}
+ finally{buttons.forEach(b=>b.disabled=false);$("#generateSelectedDaily").textContent=original;document.querySelectorAll(".daily-check").forEach(c=>c.disabled=false);updateDailySelection()}
+}
+document.addEventListener("change",e=>{if(e.target.matches(".daily-check"))updateDailySelection()});
+$("#selectAllDaily")?.addEventListener("click",()=>{document.querySelectorAll(".daily-check").forEach(c=>c.checked=true);updateDailySelection()});
+$("#clearDailySelection")?.addEventListener("click",()=>{document.querySelectorAll(".daily-check").forEach(c=>c.checked=false);updateDailySelection()});
+$("#generateSelectedDaily")?.addEventListener("click",()=>generateDailyBatch(selectedDailyTypes()));
+$("#generateAllDaily")?.addEventListener("click",()=>generateDailyBatch(dailyTypes.map(x=>x[0])));
+installDailySelection();updateDailySelection();
