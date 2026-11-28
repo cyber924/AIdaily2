@@ -95,3 +95,8 @@ main{max-width:1240px}
  .topic-directory{padding-top:30px}
 }
 @media(max-width:420px){.topic-directory-grid{grid-template-columns:1fr}.topic-hero h1{font-size:27px}}
+
+.topic-subpage-focus{margin-top:25px;padding:20px 24px;background:#fff;border:1px solid #e7e4dc;display:flex;align-items:center;justify-content:space-between;gap:20px}
+.topic-subpage-focus h2{font-size:18px;letter-spacing:-.5px;margin:7px 0}
+.topic-subpage-focus p{font-size:11px;color:#777970;margin:0;line-height:1.7}
+.topic-subpage-index{font-size:23px;font-weight:300;letter-spacing:1px;color:#c5a58e}
