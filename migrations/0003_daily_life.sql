@@ -45,3 +45,9 @@ CREATE TABLE IF NOT EXISTS quiz_attempts (
 );
 CREATE INDEX IF NOT EXISTS idx_quiz_attempts_user_date
   ON quiz_attempts(user_id, attempted_at DESC);
+
+-- Prevent duplicate Gemini requests from multiple tabs or rapid parallel requests.
+CREATE TABLE IF NOT EXISTS daily_generation_locks (
+  lock_key TEXT PRIMARY KEY,
+  created_at TEXT NOT NULL
+);
