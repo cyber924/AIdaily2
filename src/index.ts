@@ -114,7 +114,7 @@ async function handle(request:Request,env:Env){
  if(path==="/api/auth/me"&&request.method==="GET"){const user=await currentUser(request,env);return json({authenticated:!!user,user:user?{id:user.id,email:user.email,displayName:user.display_name}:null});}
  if(path==="/api/auth/register"&&request.method==="POST"){
   const b:any=await request.json();const email=safeText(b.email,254).toLowerCase();const displayName=safeText(b.displayName,60);const password=String(b.password||"");
-  if(!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email))return json({error:"올바른 이메일 주소를 입력하세요."},400);
+  if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))return json({error:"올바른 이메일 주소를 입력하세요."},400);
   if(password.length<8||password.length>72)return json({error:"비밀번호는 8~72자로 입력하세요."},400);
   if(displayName.length<2)return json({error:"이름은 2자 이상 입력하세요."},400);
   const exists=await env.DB.prepare("SELECT id FROM users WHERE email=?").bind(email).first();
@@ -128,7 +128,7 @@ async function handle(request:Request,env:Env){
  if(path==="/api/auth/login"&&request.method==="POST"){
   const b:any=await request.json();const email=safeText(b.email,254).toLowerCase();const password=String(b.password||"");
   const user=await env.DB.prepare("SELECT id,email,display_name,password_hash,password_salt FROM users WHERE email=?").bind(email).first<any>();
-  if(!user||(await passwordHash(password,user.password_salt))!==user.password_hash)return json({error:"이메일 또는 비밀번호를 확인하세요."},401);
+  if(!user||!password|| (await passwordHash(password,user.password_salt))!==user.password_hash)return json({error:"이메일 또는 비밀번호를 확인하세요."},401);
   const token=b64url(crypto.getRandomValues(new Uint8Array(32))),stamp=now(),expires=new Date(Date.now()+30*86400000).toISOString();
   await env.DB.prepare("INSERT INTO sessions(id,user_id,token_hash,expires_at,created_at) VALUES(?,?,?,?,?)").bind(id(),user.id,await sha256(token),expires,stamp).run();
   return new Response(JSON.stringify({ok:true,user:{id:user.id,email:user.email,displayName:user.display_name}}),{headers:{"content-type":"application/json; charset=utf-8","cache-control":"no-store","set-cookie":sessionCookie(token,30*86400)}});
@@ -137,9 +137,9 @@ async function handle(request:Request,env:Env){
   const token=cookieValue(request,"aidaily_session");if(token)await env.DB.prepare("DELETE FROM sessions WHERE token_hash=?").bind(await sha256(token)).run();
   return new Response(JSON.stringify({ok:true}),{headers:{"content-type":"application/json; charset=utf-8","cache-control":"no-store","Set-Cookie":"aidaily_session=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0"}});
  }
- if(path==="/api/health")return json({ok:true,service:"AIdaily2",database:"D1",aiConfigured:!!env.GEMINI_API_KEY,model:env.GEMINI_MODEL||"gemini-3.8-flash",login:"deferred-development-mode"});
+ if(path==="/api/health")return json({ok:true,service:"AIdaily2",database:"D1",aiConfigured:!!env.GEMINI_API_KEY,model:env.GEMINI_MODEL||"gemini-3.8-flash",login:"email-password"});
  if(path==="/api/articles"&&request.method==="GET"){
-  const category=url.searchParams.get("category");const status=url.searchParams.get("status")||"published";const limit=Math.min(100,Math.max(1,Number(url.searchParams.get("limit")||30)));
+  const category=url.searchParams.get("category");const status=url.searchParams.get("status")||"published";if(status!=="published"&&!await requireUser(request,env))return json({error:"로그인이 필요합니다."},401);const limit=Math.min(100,Math.max(1,Number(url.searchParams.get("limit")||30)));
   const result=category?await env.DB.prepare("SELECT * FROM articles WHERE status=? AND category=? ORDER BY published_at DESC LIMIT ?").bind(status,category,limit).all():await env.DB.prepare("SELECT * FROM articles WHERE status=? ORDER BY published_at DESC LIMIT ?").bind(status,limit).all();
   return json(result.results);
  }
