@@ -9,6 +9,23 @@ export interface Env {
 const json=(data:unknown,status=200)=>new Response(JSON.stringify(data),{status,headers:{"content-type":"application/json; charset=utf-8","cache-control":"no-store"}});
 const now=()=>new Date().toISOString();
 const id=()=>crypto.randomUUID();
+const b64url=(bytes:Uint8Array)=>btoa(String.fromCharCode(...bytes)).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
+const fromB64url=(value:string)=>Uint8Array.from(atob(value.replace(/-/g,"+").replace(/_/g,"/")),c=>c.charCodeAt(0));
+async function sha256(value:string){return b64url(new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(value))));}
+async function passwordHash(password:string,salt:string){
+ const key=await crypto.subtle.importKey("raw",new TextEncoder().encode(password),"PBKDF2",false,["deriveBits"]);
+ const bits=await crypto.subtle.deriveBits({name:"PBKDF2",salt:fromB64url(salt),iterations:100000,hash:"SHA-256"},key,256);
+ return b64url(new Uint8Array(bits));
+}
+function cookieValue(request:Request,name:string){return (request.headers.get("cookie")||"").split(";").map(x=>x.trim()).find(x=>x.startsWith(name+"="))?.slice(name.length+1)||"";}
+async function currentUser(request:Request,env:Env){
+ const token=cookieValue(request,"aidaily_session");if(!token)return null;
+ const row=await env.DB.prepare("SELECT u.id,u.email,u.display_name FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>?").bind(await sha256(token),now()).first<any>();
+ return row||null;
+}
+async function requireUser(request:Request,env:Env){const user=await currentUser(request,env);return user;}
+function sessionCookie(token:string,maxAge:number){return "aidaily_session="+token+"; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age="+maxAge;}
+
 const safeText=(v:unknown,max=5000)=>String(v??"").trim().slice(0,max);
 const categories=["시사","경제","IT","산업","금융","정치","사회","라이프","과학","문화"];
 function decode(s:string){return s.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g,"$1").replace(/&amp;/g,"&").replace(/&quot;/g,'"').replace(/&#39;|&apos;/g,"'").replace(/&lt;/g,"<").replace(/&gt;/g,">");}
@@ -94,6 +111,32 @@ async function publishDue(env:Env){
 }
 async function handle(request:Request,env:Env){
  const url=new URL(request.url),path=url.pathname;
+ if(path==="/api/auth/me"&&request.method==="GET"){const user=await currentUser(request,env);return json({authenticated:!!user,user:user?{id:user.id,email:user.email,displayName:user.display_name}:null});}
+ if(path==="/api/auth/register"&&request.method==="POST"){
+  const b:any=await request.json();const email=safeText(b.email,254).toLowerCase();const displayName=safeText(b.displayName,60);const password=String(b.password||"");
+  if(!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email))return json({error:"올바른 이메일 주소를 입력하세요."},400);
+  if(password.length<8||password.length>72)return json({error:"비밀번호는 8~72자로 입력하세요."},400);
+  if(displayName.length<2)return json({error:"이름은 2자 이상 입력하세요."},400);
+  const exists=await env.DB.prepare("SELECT id FROM users WHERE email=?").bind(email).first();
+  if(exists)return json({error:"이미 가입된 이메일입니다. 로그인해 주세요."},409);
+  const userId=id(),salt=b64url(crypto.getRandomValues(new Uint8Array(16))),hash=await passwordHash(password,salt),stamp=now();
+  await env.DB.prepare("INSERT INTO users(id,email,display_name,password_hash,password_salt,created_at,updated_at) VALUES(?,?,?,?,?,?,?)").bind(userId,email,displayName,hash,salt,stamp,stamp).run();
+  const token=b64url(crypto.getRandomValues(new Uint8Array(32))),expires=new Date(Date.now()+30*86400000).toISOString();
+  await env.DB.prepare("INSERT INTO sessions(id,user_id,token_hash,expires_at,created_at) VALUES(?,?,?,?,?)").bind(id(),userId,await sha256(token),expires,stamp).run();
+  return new Response(JSON.stringify({ok:true,user:{id:userId,email,displayName}}),{headers:{"content-type":"application/json; charset=utf-8","cache-control":"no-store","set-cookie":sessionCookie(token,30*86400)}});
+ }
+ if(path==="/api/auth/login"&&request.method==="POST"){
+  const b:any=await request.json();const email=safeText(b.email,254).toLowerCase();const password=String(b.password||"");
+  const user=await env.DB.prepare("SELECT id,email,display_name,password_hash,password_salt FROM users WHERE email=?").bind(email).first<any>();
+  if(!user||(await passwordHash(password,user.password_salt))!==user.password_hash)return json({error:"이메일 또는 비밀번호를 확인하세요."},401);
+  const token=b64url(crypto.getRandomValues(new Uint8Array(32))),stamp=now(),expires=new Date(Date.now()+30*86400000).toISOString();
+  await env.DB.prepare("INSERT INTO sessions(id,user_id,token_hash,expires_at,created_at) VALUES(?,?,?,?,?)").bind(id(),user.id,await sha256(token),expires,stamp).run();
+  return new Response(JSON.stringify({ok:true,user:{id:user.id,email:user.email,displayName:user.display_name}}),{headers:{"content-type":"application/json; charset=utf-8","cache-control":"no-store","set-cookie":sessionCookie(token,30*86400)}});
+ }
+ if(path==="/api/auth/logout"&&request.method==="POST"){
+  const token=cookieValue(request,"aidaily_session");if(token)await env.DB.prepare("DELETE FROM sessions WHERE token_hash=?").bind(await sha256(token)).run();
+  return new Response(JSON.stringify({ok:true}),{headers:{"content-type":"application/json; charset=utf-8","cache-control":"no-store","Set-Cookie":"aidaily_session=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0"}});
+ }
  if(path==="/api/health")return json({ok:true,service:"AIdaily2",database:"D1",aiConfigured:!!env.GEMINI_API_KEY,model:env.GEMINI_MODEL||"gemini-3.8-flash",login:"deferred-development-mode"});
  if(path==="/api/articles"&&request.method==="GET"){
   const category=url.searchParams.get("category");const status=url.searchParams.get("status")||"published";const limit=Math.min(100,Math.max(1,Number(url.searchParams.get("limit")||30)));
@@ -101,6 +144,7 @@ async function handle(request:Request,env:Env){
   return json(result.results);
  }
  if(path==="/api/articles"&&request.method==="POST"){
+  if(!await requireUser(request,env))return json({error:"로그인이 필요합니다."},401);
   const b:any=await request.json();const articleId=id(),stamp=now();await env.DB.prepare("INSERT INTO articles(id,title,summary,content,category,image_url,image_alt,image_credit,status,created_at,published_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)").bind(articleId,safeText(b.title,240),safeText(b.summary,700),safeText(b.content,12000),safeText(b.category,40)||"시사",safeText(b.image_url,2000),safeText(b.image_alt,500),safeText(b.image_credit,500),b.status==="draft"?"draft":"published",stamp,b.status==="draft"?null:stamp,stamp).run();return json({ok:true,id:articleId});
  }
  if(path==="/api/images"&&request.method==="GET"){
@@ -110,25 +154,27 @@ async function handle(request:Request,env:Env){
   return json((d.results||[]).map((p:any)=>({url:p.urls?.regular,alt:p.alt_description||query,credit:"Photo by "+(p.user?.name||"Unsplash")+" on Unsplash",link:p.links?.html})));
  }
  if(path.startsWith("/api/articles/")&&request.method==="PUT"){
+  if(!await requireUser(request,env))return json({error:"로그인이 필요합니다."},401);
   const articleId=path.split("/").pop();const b:any=await request.json();const stamp=now();
   await env.DB.prepare("UPDATE articles SET title=?,summary=?,content=?,category=?,image_url=?,image_alt=?,image_credit=?,status=?,published_at=CASE WHEN ?='published' THEN COALESCE(published_at,?) ELSE published_at END,updated_at=? WHERE id=?")
    .bind(safeText(b.title,240),safeText(b.summary,700),safeText(b.content,12000),safeText(b.category,40),safeText(b.image_url,2000),safeText(b.image_alt,500),safeText(b.image_credit,500),b.status==="draft"?"draft":"published",b.status==="draft"?"draft":"published",stamp,stamp,articleId).run();
   return json({ok:true});
  }
- if(path.startsWith("/api/articles/")&&request.method==="DELETE"){const articleId=path.split("/").pop();await env.DB.prepare("UPDATE articles SET status='archived',updated_at=? WHERE id=?").bind(now(),articleId).run();return json({ok:true});}
+ if(path.startsWith("/api/articles/")&&request.method==="DELETE"){if(!await requireUser(request,env))return json({error:"로그인이 필요합니다."},401);const articleId=path.split("/").pop();await env.DB.prepare("UPDATE articles SET status='archived',updated_at=? WHERE id=?").bind(now(),articleId).run();return json({ok:true});}
  if(path==="/api/news"&&request.method==="GET"){const items=await collectNews();return json(items.slice(0,50));}
- if(path==="/api/generate"&&request.method==="POST"){const b:any=await request.json();const created=await createBriefing(env,safeText(b.category,40)||undefined,safeText(b.topic,300)||undefined);return json({ok:true,articles:created});}
+ if(path==="/api/generate"&&request.method==="POST"){if(!await requireUser(request,env))return json({error:"로그인이 필요합니다."},401);const b:any=await request.json();const created=await createBriefing(env,safeText(b.category,40)||undefined,safeText(b.topic,300)||undefined);return json({ok:true,articles:created});}
  if(path==="/api/agent"&&request.method==="POST"){
+  if(!await requireUser(request,env))return json({error:"로그인이 필요합니다."},401);
   const b:any=await request.json();const command=safeText(b.command,1000);if(!command)return json({error:"명령을 입력하세요."},400);
   if(/예약/.test(command)){const m=command.match(/(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2})/);if(!m)return json({error:"예약 시간은 YYYY-MM-DD HH:mm 형식으로 말해주세요."},400);const dt=new Date(m[1].replace(" ","T")+":00+09:00");if(isNaN(dt.getTime()))return json({error:"예약 시간이 올바르지 않습니다."},400);const qid=id(),stamp=now();await env.DB.prepare("INSERT INTO publish_queue(id,topic,category,scheduled_at,status,created_at,updated_at) VALUES(?,?,?,?, 'queued',?,?)").bind(qid,command,categories.find(c=>command.includes(c))||"시사",dt.toISOString(),stamp,stamp).run();return json({ok:true,message:"예약 대기열에 등록했습니다.",id:qid});}
   if(/뉴스|브리핑|발행|작성|만들어|생성/.test(command)){const cat=categories.find(c=>command.includes(c));const result=await createBriefing(env,cat);return json({ok:true,message:result.length+"건의 브리핑을 생성하고 발행했습니다.",articles:result});}
 
   return json({ok:true,message:"명령을 이해했습니다. '오늘 IT 뉴스 브리핑 발행해줘' 또는 '2026-11-28 09:00 시사 뉴스 예약해줘'처럼 요청해 주세요."});
  }
- if(path==="/api/queue"&&request.method==="GET"){await publishDue(env);const r=await env.DB.prepare("SELECT * FROM publish_queue ORDER BY created_at DESC LIMIT 50").all();return json(r.results);}
- if(path==="/api/queue"&&request.method==="POST"){const b:any=await request.json();const dt=new Date(safeText(b.scheduled_at));if(isNaN(dt.getTime())||dt.getTime()<=Date.now())return json({error:"미래 시간을 선택하세요."},400);const qid=id(),stamp=now();await env.DB.prepare("INSERT INTO publish_queue(id,topic,category,scheduled_at,status,created_at,updated_at) VALUES(?,?,?,?, 'queued',?,?)").bind(safeText(b.topic,300)||"오늘의 뉴스 브리핑",safeText(b.category,40)||"시사",dt.toISOString(),stamp,stamp).run();return json({ok:true,id:qid});}
- if(path.startsWith("/api/queue/")&&request.method==="DELETE"){await env.DB.prepare("UPDATE publish_queue SET status='cancelled',updated_at=? WHERE id=? AND status='queued'").bind(now(),path.split("/").pop()).run();return json({ok:true});}
- if(path==="/api/publish-due"&&request.method==="POST")return json({results:await publishDue(env)});
+ if(path==="/api/queue"&&request.method==="GET"){if(!await requireUser(request,env))return json({error:"로그인이 필요합니다."},401);await publishDue(env);const r=await env.DB.prepare("SELECT * FROM publish_queue ORDER BY created_at DESC LIMIT 50").all();return json(r.results);}
+ if(path==="/api/queue"&&request.method==="POST"){if(!await requireUser(request,env))return json({error:"로그인이 필요합니다."},401);const b:any=await request.json();const dt=new Date(safeText(b.scheduled_at));if(isNaN(dt.getTime())||dt.getTime()<=Date.now())return json({error:"미래 시간을 선택하세요."},400);const qid=id(),stamp=now();await env.DB.prepare("INSERT INTO publish_queue(id,topic,category,scheduled_at,status,created_at,updated_at) VALUES(?,?,?,?, 'queued',?,?)").bind(safeText(b.topic,300)||"오늘의 뉴스 브리핑",safeText(b.category,40)||"시사",dt.toISOString(),stamp,stamp).run();return json({ok:true,id:qid});}
+ if(path.startsWith("/api/queue/")&&request.method==="DELETE"){if(!await requireUser(request,env))return json({error:"로그인이 필요합니다."},401);await env.DB.prepare("UPDATE publish_queue SET status='cancelled',updated_at=? WHERE id=? AND status='queued'").bind(now(),path.split("/").pop()).run();return json({ok:true});}
+ if(path==="/api/publish-due"&&request.method==="POST"){if(!await requireUser(request,env))return json({error:"로그인이 필요합니다."},401);return json({results:await publishDue(env)});}
  return env.ASSETS.fetch(request);
 }
 export default {fetch(request:Request,env:Env){return handle(request,env).catch(e=>json({error:(e as Error).message||"요청 처리 실패"},500));}} satisfies ExportedHandler<Env>;
