@@ -243,7 +243,15 @@ async function handle(request:Request,env:Env){
   return json({ok:true,message:"명령을 이해했습니다. '오늘 IT 뉴스 브리핑 발행해줘' 또는 '2026-11-28 09:00 시사 뉴스 예약해줘'처럼 요청해 주세요."});
  }
  if(path==="/api/queue"&&request.method==="GET"){const user=await requireUser(request,env);if(!user)return json({error:"로그인이 필요합니다."},401);await publishDue(env);const r=await env.DB.prepare("SELECT * FROM publish_queue WHERE owner_user_id=? ORDER BY created_at DESC LIMIT 50").bind(user.id).all();return json(r.results);}
- if(path==="/api/queue"&&request.method==="POST"){if(!await requireUser(request,env))return json({error:"로그인이 필요합니다."},401);const b:any=await request.json();const dt=new Date(safeText(b.scheduled_at));if(isNaN(dt.getTime())||dt.getTime()<=Date.now())return json({error:"미래 시간을 선택하세요."},400);const qid=id(),stamp=now();await env.DB.prepare("INSERT INTO publish_queue(id,topic,category,scheduled_at,status,created_at,updated_at) VALUES(?,?,?,?, 'queued',?,?)").bind(safeText(b.topic,300)||"오늘의 뉴스 브리핑",safeText(b.category,40)||"시사",dt.toISOString(),stamp,stamp).run();return json({ok:true,id:qid});}
+ if(path==="/api/queue"&&request.method==="POST"){
+  const user=await requireUser(request,env);if(!user)return json({error:"로그인이 필요합니다."},401);
+  const b:any=await request.json();const dt=new Date(safeText(b.scheduled_at));
+  if(isNaN(dt.getTime())||dt.getTime()<=Date.now())return json({error:"미래 시간을 선택하세요."},400);
+  const qid=id(),stamp=now();
+  await env.DB.prepare("INSERT INTO publish_queue(id,topic,category,scheduled_at,status,created_at,updated_at,owner_user_id) VALUES(?,?,?,?,?,?,?,?)")
+   .bind(qid,safeText(b.topic,300)||"오늘의 뉴스 브리핑",safeText(b.category,40)||"시사",dt.toISOString(),"queued",stamp,stamp,user.id).run();
+  return json({ok:true,id:qid});
+ }
  if(path.startsWith("/api/queue/")&&request.method==="DELETE"){if(!await requireUser(request,env))return json({error:"로그인이 필요합니다."},401);await env.DB.prepare("UPDATE publish_queue SET status='cancelled',updated_at=? WHERE id=? AND status='queued'").bind(now(),path.split("/").pop()).run();return json({ok:true});}
  if(path==="/api/publish-due"&&request.method==="POST"){if(!await requireUser(request,env))return json({error:"로그인이 필요합니다."},401);return json({results:await publishDue(env)});}
  return env.ASSETS.fetch(request);
