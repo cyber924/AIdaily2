@@ -258,7 +258,11 @@ async function handle(request:Request,env:Env){
    .bind(qid,safeText(b.topic,300)||"오늘의 뉴스 브리핑",safeText(b.category,40)||"시사",dt.toISOString(),"queued",stamp,stamp,user.id).run();
   return json({ok:true,id:qid});
  }
- if(path.startsWith("/api/queue/")&&request.method==="DELETE"){if(!await requireUser(request,env))return json({error:"로그인이 필요합니다."},401);await env.DB.prepare("UPDATE publish_queue SET status='cancelled',updated_at=? WHERE id=? AND status='queued'").bind(now(),path.split("/").pop()).run();return json({ok:true});}
+ if(path.startsWith("/api/queue/")&&request.method==="DELETE"){
+  const user=await requireUser(request,env);if(!user)return json({error:"로그인이 필요합니다."},401);
+  await env.DB.prepare("UPDATE publish_queue SET status='cancelled',updated_at=? WHERE id=? AND owner_user_id=? AND status='queued'").bind(now(),path.split("/").pop(),user.id).run();
+  return json({ok:true});
+ }
  if(path==="/api/publish-due"&&request.method==="POST"){if(!await requireUser(request,env))return json({error:"로그인이 필요합니다."},401);return json({results:await publishDue(env)});}
  return env.ASSETS.fetch(request);
 }
